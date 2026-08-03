@@ -8,6 +8,7 @@ import json
 import secrets
 import hashlib
 import base64
+import time
 import uuid
 from urllib.parse import parse_qs
 
@@ -35,6 +36,11 @@ class WatercareApi:
         self._refresh_token = None
         self._refresh_token_expires_in = 0
         self._access_token_expires_in = 0
+        self._access_token_expires_at = 0.0
+
+    def _access_token_is_expired(self) -> bool:
+        """Return whether the access token is missing or near expiry."""
+        return not self._token or time.monotonic() >= self._access_token_expires_at
 
     def get_setting_json(self, page: str) -> Mapping[str, Any] | None:
         """Get the settings from json result."""
@@ -157,12 +163,19 @@ class WatercareApi:
                     "refresh_token_expires_in"
                 )
                 self._access_token_expires_in = response_data.get("expires_in")
+                expires_in = int(self._access_token_expires_in or 0)
+                self._access_token_expires_at = time.monotonic() + max(
+                    expires_in - 60, 0
+                )
 
             _LOGGER.debug("Refresh token retrieved successfully.")
             await self.get_accounts()
 
     async def get_api_token(self):
-        """Get token from the Watercare API."""
+        """Refresh the Watercare access token."""
+        if not self._refresh_token:
+            return False
+
         token_data = {
             "grant_type": "refresh_token",
             "client_id": self._client_id,
@@ -174,12 +187,24 @@ class WatercareApi:
             url = f"{self._url_token_base}/{self._p}/oauth2/v2.0/token"
             async with session.post(url, data=token_data) as response:
                 if response.status == 200:
-                    jsonResult = await response.json()
-                    self._token = jsonResult["access_token"]
-                    _LOGGER.debug(f"Authenticity Token: {self._token}")
-                    await self.get_accounts()
+                    token_result = await response.json()
+                    self._token = token_result.get("access_token")
+                    self._refresh_token = (
+                        token_result.get("refresh_token") or self._refresh_token
+                    )
+                    self._access_token_expires_in = token_result.get("expires_in", 0)
+                    expires_in = int(self._access_token_expires_in or 0)
+                    self._access_token_expires_at = time.monotonic() + max(
+                        expires_in - 60, 0
+                    )
+                    _LOGGER.debug("Watercare access token refreshed successfully")
+                    return bool(self._token)
                 else:
-                    _LOGGER.error("Failed to retrieve the token page.")
+                    _LOGGER.warning(
+                        "Failed to refresh Watercare access token: %s",
+                        response.status,
+                    )
+                    return False
 
     async def get_accounts(self):
         """Get the first account that we see."""
@@ -217,15 +242,23 @@ class WatercareApi:
         ]:
             raise ValueError("Invalid endpoint specified")
 
-        # If no account number, need to authenticate first
+        # Authenticate fully on first use. On later polls, proactively refresh
+        # the short-lived access token while retaining the account number.
         if not self._accountNumber:
             _LOGGER.debug("No account number found, starting authentication process")
             await self.get_refresh_token()
             if not self._accountNumber:
                 _LOGGER.error("Authentication failed - no account number obtained")
                 return None
-
-        headers = {"authorization": "Bearer " + (self._token or "")}
+        elif self._access_token_is_expired():
+            if not await self.get_api_token():
+                _LOGGER.debug(
+                    "Refresh token unavailable or expired; authenticating again"
+                )
+                await self.get_refresh_token()
+                if not self._accountNumber or not self._token:
+                    _LOGGER.error("Watercare reauthentication failed")
+                    return None
 
         url = f"{self._url_base}v1/usage/{self._accountNumber}/{endpoint}"
         if start_date and end_date:
@@ -233,16 +266,35 @@ class WatercareApi:
 
         _LOGGER.debug(f"Calling API URL: {url}")
 
-        jar = aiohttp.CookieJar(quote_cookie=False)
-        async with (
-            aiohttp.ClientSession(cookie_jar=jar) as session,
-            session.get(url, headers=headers) as response,
-        ):
-            if response.status == 200:
-                data = await response.text()
-                _LOGGER.debug(f"API Response status: {response.status}")
-                _LOGGER.debug(f"API Response data length: {len(data) if data else 0}")
-                return data
-            else:
-                _LOGGER.error(f"Could not fetch consumption: {response.status}")
+        # Retry once after a 401. This also covers early token invalidation by
+        # Watercare rather than only relying on the advertised expiry time.
+        for attempt in range(2):
+            headers = {"authorization": "Bearer " + (self._token or "")}
+            jar = aiohttp.CookieJar(quote_cookie=False)
+            async with (
+                aiohttp.ClientSession(cookie_jar=jar) as session,
+                session.get(url, headers=headers) as response,
+            ):
+                if response.status == 200:
+                    data = await response.text()
+                    _LOGGER.debug("API Response status: %s", response.status)
+                    _LOGGER.debug(
+                        "API Response data length: %s", len(data) if data else 0
+                    )
+                    return data
+
+                if response.status == 401 and attempt == 0:
+                    _LOGGER.warning(
+                        "Watercare access token was rejected; refreshing and retrying"
+                    )
+                    if await self.get_api_token():
+                        continue
+
+                    await self.get_refresh_token()
+                    if self._token:
+                        continue
+
+                _LOGGER.error("Could not fetch consumption: %s", response.status)
                 return None
+
+        return None
