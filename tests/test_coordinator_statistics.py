@@ -10,7 +10,7 @@ recorder/database -- we only need to see what would have been written.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, UTC
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
@@ -87,9 +87,9 @@ async def test_consumption_start_timestamps_are_nz_localised(hass) -> None:
     expected_starts = [
         datetime_utc.astimezone(NZ)
         for datetime_utc in (
-            datetime(2026, 5, 31, tzinfo=timezone.utc),
-            datetime(2026, 6, 30, tzinfo=timezone.utc),
-            datetime(2026, 7, 31, tzinfo=timezone.utc),
+            datetime(2026, 5, 31, tzinfo=UTC),
+            datetime(2026, 6, 30, tzinfo=UTC),
+            datetime(2026, 7, 31, tzinfo=UTC),
         )
     ]
 

@@ -8,7 +8,7 @@ sensor silently "unknown" in production.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 
 from custom_components.watercare.sensor import _timestamp
 
@@ -16,13 +16,13 @@ from custom_components.watercare.sensor import _timestamp
 def test_parses_millisecond_form() -> None:
     result = _timestamp("2026-07-15T12:00:00.000Z")
 
-    assert result == datetime(2026, 7, 15, 12, 0, 0, tzinfo=timezone.utc)
+    assert result == datetime(2026, 7, 15, 12, 0, 0, tzinfo=UTC)
 
 
 def test_parses_no_millisecond_form() -> None:
     result = _timestamp("2026-08-06T23:59:59Z")
 
-    assert result == datetime(2026, 8, 6, 23, 59, 59, tzinfo=timezone.utc)
+    assert result == datetime(2026, 8, 6, 23, 59, 59, tzinfo=UTC)
 
 
 def test_none_input_returns_none() -> None:

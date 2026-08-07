@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, UTC
 from typing import Any
 
 import aiohttp
@@ -258,7 +258,7 @@ class WatercareCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 try:
                     # Parse and convert to NZ timezone
                     end_date = datetime.strptime(end_date_str, "%Y-%m-%dT%H:%M:%S.%fZ")
-                    end_date = end_date.replace(tzinfo=timezone.utc).astimezone(
+                    end_date = end_date.replace(tzinfo=UTC).astimezone(
                         NZ_TIMEZONE
                     )
 
