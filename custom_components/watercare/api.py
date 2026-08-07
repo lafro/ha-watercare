@@ -42,6 +42,7 @@ class WatercareApi:
         self._session = session
 
         self._accountNumber = None
+        self._account: dict | None = None
         self._token = None
         self._refresh_token = None
         self._refresh_token_expires_in = 0
@@ -52,6 +53,11 @@ class WatercareApi:
     def account_number(self):
         """Return the Watercare account number, once known."""
         return self._accountNumber
+
+    @property
+    def account(self) -> dict | None:
+        """Return the most recent v1/account record for this account."""
+        return self._account
 
     def _api_session(self) -> tuple[aiohttp.ClientSession, bool]:
         """Return (session, owned) for plain API calls."""
@@ -264,6 +270,10 @@ class WatercareApi:
                     data = await result.json()
                     _LOGGER.debug(f"Accounts: {data}")
                     if data and isinstance(data, list) and len(data) > 0:
+                        # Keep the whole record: it carries the meter type, meter
+                        # serial, balance, amount due and due date, none of which
+                        # appear on the usage endpoints.
+                        self._account = data[0]
                         self._accountNumber = data[0].get("accountNumber")
                         if self._accountNumber:
                             _LOGGER.debug(f"AccountNumber: {self._accountNumber}")
@@ -310,6 +320,10 @@ class WatercareApi:
                 await self.get_refresh_token()
                 if not self._accountNumber or not self._token:
                     raise WatercareAuthError("Watercare reauthentication failed")
+
+        # Refresh the account record each poll so balance, amount due and due
+        # date stay current; it is a small request and only runs twice a day.
+        await self.get_accounts()
 
         url = f"{self._url_base}v1/usage/{self._accountNumber}/{endpoint}"
         if start_date and end_date:

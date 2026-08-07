@@ -102,6 +102,20 @@ def _async_migrate_unique_id(hass: HomeAssistant, entry: WatercareConfigEntry) -
         )
         registry.async_update_entity(legacy_entity_id, new_unique_id=new_unique_id)
 
+    # These shipped disabled while they read from a payload that never carried
+    # them. They are populated now, so undo the disable we applied -- but only
+    # ours: a user-disabled entity records disabled_by "user" and is left be.
+    for key in ("account_balance", "amount_due"):
+        entity_id = registry.async_get_entity_id(
+            Platform.SENSOR, DOMAIN, f"{entry.entry_id}_{key}"
+        )
+        if not entity_id:
+            continue
+        existing = registry.async_get(entity_id)
+        if existing and existing.disabled_by is er.RegistryEntryDisabler.INTEGRATION:
+            _LOGGER.info("Re-enabling %s now that Watercare reports it", entity_id)
+            registry.async_update_entity(entity_id, disabled_by=None)
+
 
 async def _async_options_updated(
     hass: HomeAssistant, entry: WatercareConfigEntry

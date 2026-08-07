@@ -36,16 +36,24 @@ The rate fields correspond to the *Charge details* section of a Watercare bill. 
 
 | Entity | |
 |---|---|
-| Current bill usage | Litres used this billing period. Mechanical meters are billed in whole kilolitres, so this changes in 1,000 L steps. |
-| Current bill cost | Cost of the period so far, from the configured rates. |
-| Daily average | Average daily use this period. |
-| Billing period end | When the current billing period ends. |
-| Reading type | Whether the latest reading was an estimate or an actual read. |
+| Last bill usage | Litres used in the most recent billing period. Mechanical meters are billed in whole kilolitres, so this changes in 1,000 L steps. |
+| Last bill cost | Cost of that period, from the configured rates. |
+| Daily average | Average daily use over that period. |
+| Last billing period end | When the most recent billing period ended. |
+| Payment due | When payment is due. |
+| Reading type | Whether the reading was an estimate or an actual read. |
 | Household efficiency band | Watercare's usage band for the household size. |
-| Account balance | Balance on the account, when Watercare reports it. |
-| Amount due | Amount owing, when Watercare reports it. |
+| Account balance | Balance on the account. |
+| Amount due | Amount owing. |
+| Overdue amount | Amount past its due date. Disabled by default. |
 
-**Billing period end**, **Reading type** and **Household efficiency band** are diagnostic entities. **Account balance** and **Amount due** are disabled by default, as Watercare doesn't report them for all accounts.
+Watercare only publishes completed billing periods, so these describe the last issued
+bill rather than usage accruing now. On the daily smart-meter source the first two are
+named for yesterday instead.
+
+**Last billing period end**, **Payment due**, **Reading type**, **Household efficiency
+band**, **Account balance**, **Amount due** and **Overdue amount** are diagnostic
+entities.
 
 ## Energy dashboard
 

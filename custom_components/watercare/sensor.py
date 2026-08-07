@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any
 
@@ -28,20 +28,36 @@ _LOGGER = logging.getLogger(__name__)
 
 READING_TYPES = {"E": "Estimate", "A": "Actual"}
 
+# The billing-period endpoints only ever return *completed* periods, so the
+# newest one is the last issued bill -- not a period still accruing. The daily
+# smart-meter endpoint reports yesterday. Name the entities for what they hold.
+PERIOD_LABELS = {
+    "dailywithstats": {"usage": "Yesterday's usage", "cost": "Yesterday's cost"},
+    "default": {"usage": "Last bill usage", "cost": "Last bill cost"},
+}
+
+
+def _labels(endpoint: str) -> dict[str, str]:
+    return PERIOD_LABELS.get(endpoint, PERIOD_LABELS["default"])
+
 
 def _attr(data: dict[str, Any], key: str) -> Any:
     return data.get("attributes", {}).get(key)
 
 
 def _timestamp(value: Any) -> datetime | None:
-    if not value:
+    """Parse a Watercare timestamp.
+
+    The usage endpoints send milliseconds ("...T12:00:00.000Z") but the
+    account endpoint's dueDate does not ("...T23:59:59Z"), so accept both.
+    """
+    if not isinstance(value, str):
         return None
     try:
-        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%S.%fZ").replace(
-            tzinfo=timezone.utc
-        )
-    except (TypeError, ValueError):
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
         return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -58,7 +74,6 @@ class WatercareSensorDescription(SensorEntityDescription):
 SENSOR_DESCRIPTIONS: tuple[WatercareSensorDescription, ...] = (
     WatercareSensorDescription(
         key="current_bill_cost",
-        name="Current bill cost",
         device_class=SensorDeviceClass.MONETARY,
         native_unit_of_measurement="NZD",
         state_class=SensorStateClass.TOTAL,
@@ -75,10 +90,17 @@ SENSOR_DESCRIPTIONS: tuple[WatercareSensorDescription, ...] = (
     ),
     WatercareSensorDescription(
         key="billing_period_end",
-        name="Billing period end",
+        name="Last billing period end",
         device_class=SensorDeviceClass.TIMESTAMP,
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda data: _timestamp(_attr(data, "billing_period_to")),
+    ),
+    WatercareSensorDescription(
+        key="payment_due_date",
+        name="Payment due",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda data: _timestamp(_attr(data, "payment_due_date")),
     ),
     WatercareSensorDescription(
         key="reading_type",
@@ -96,15 +118,13 @@ SENSOR_DESCRIPTIONS: tuple[WatercareSensorDescription, ...] = (
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda data: _attr(data, "household_efficiency_band"),
     ),
-    # Only populated when Watercare exposes billing balances for the account
-    # (typically not on direct-debit accounts), so these start disabled.
     WatercareSensorDescription(
         key="account_balance",
         name="Account balance",
         device_class=SensorDeviceClass.MONETARY,
         native_unit_of_measurement="NZD",
+        suggested_display_precision=2,
         entity_category=EntityCategory.DIAGNOSTIC,
-        entity_registry_enabled_default=False,
         value_fn=lambda data: _attr(data, "account_balance"),
     ),
     WatercareSensorDescription(
@@ -112,9 +132,19 @@ SENSOR_DESCRIPTIONS: tuple[WatercareSensorDescription, ...] = (
         name="Amount due",
         device_class=SensorDeviceClass.MONETARY,
         native_unit_of_measurement="NZD",
+        suggested_display_precision=2,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda data: _attr(data, "amount_due"),
+    ),
+    WatercareSensorDescription(
+        key="overdue_amount",
+        name="Overdue amount",
+        device_class=SensorDeviceClass.MONETARY,
+        native_unit_of_measurement="NZD",
+        suggested_display_precision=2,
         entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
-        value_fn=lambda data: _attr(data, "amount_due"),
+        value_fn=lambda data: _attr(data, "overdue_amount"),
     ),
 )
 
@@ -126,20 +156,26 @@ async def async_setup_entry(
 ) -> None:
     """Set up the Watercare sensor platform."""
     coordinator = entry.runtime_data
+    labels = _labels(coordinator.endpoint)
     entities: list[SensorEntity] = [WatercareUsageSensor(entry, coordinator)]
-    entities.extend(
-        WatercareSensor(entry, coordinator, description)
-        for description in SENSOR_DESCRIPTIONS
-    )
+    for description in SENSOR_DESCRIPTIONS:
+        if description.key == "current_bill_cost":
+            description = replace(description, name=labels["cost"])
+        entities.append(WatercareSensor(entry, coordinator, description))
     async_add_entities(entities)
 
 
-def _device_info(entry: WatercareConfigEntry) -> DeviceInfo:
+def _device_info(
+    entry: WatercareConfigEntry, coordinator: WatercareCoordinator
+) -> DeviceInfo:
+    account = coordinator.api.account or {}
+    meters = account.get("meters") or [{}]
     return DeviceInfo(
         identifiers={(DOMAIN, entry.entry_id)},
         name="Watercare",
         manufacturer="Watercare Services",
         model="Water account",
+        serial_number=meters[0].get("id"),
         configuration_url="https://myaccount.watercare.co.nz/",
     )
 
@@ -155,7 +191,6 @@ class WatercareUsageSensor(
     """
 
     _attr_has_entity_name = True
-    _attr_name = "Current bill usage"
     _attr_icon = "mdi:water"
     _attr_device_class = SensorDeviceClass.WATER
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
@@ -166,8 +201,9 @@ class WatercareUsageSensor(
     ) -> None:
         """Initialize Watercare Usage sensor."""
         super().__init__(coordinator)
+        self._attr_name = _labels(coordinator.endpoint)["usage"]
         self._attr_unique_id = f"{entry.entry_id}_usage"
-        self._attr_device_info = _device_info(entry)
+        self._attr_device_info = _device_info(entry, coordinator)
 
     @property
     def native_value(self) -> Any:
@@ -196,7 +232,7 @@ class WatercareSensor(CoordinatorEntity[WatercareCoordinator], SensorEntity):
         super().__init__(coordinator)
         self.entity_description = description
         self._attr_unique_id = f"{entry.entry_id}_{description.key}"
-        self._attr_device_info = _device_info(entry)
+        self._attr_device_info = _device_info(entry, coordinator)
 
     @property
     def native_value(self) -> Any:

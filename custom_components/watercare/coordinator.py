@@ -39,6 +39,33 @@ _LOGGER = logging.getLogger(__name__)
 UPDATE_INTERVAL = timedelta(hours=12)
 
 
+def _period_days(period: dict[str, Any]) -> int:
+    """Length of a billing period in days.
+
+    Watercare supplies numberOfDays; fall back to the dates if it is absent.
+    """
+    supplied = period.get("statistics", {}).get("numberOfDays")
+    if isinstance(supplied, int) and supplied > 0:
+        return supplied
+    return (
+        datetime.strptime(period["billingPeriodToDate"], "%Y-%m-%dT%H:%M:%S.%fZ")
+        - datetime.strptime(period["billingPeriodFromDate"], "%Y-%m-%dT%H:%M:%S.%fZ")
+    ).days + 1
+
+
+def _account_attributes(account: dict[str, Any] | None) -> dict[str, Any]:
+    """Billing fields from v1/account. The usage endpoints never carry these."""
+    if not account:
+        return {}
+    return {
+        "account_balance": account.get("accountBalance"),
+        "amount_due": account.get("amountDue"),
+        "overdue_amount": account.get("overdueAmount"),
+        "payment_due_date": account.get("dueDate") if account.get("hasDueDate") else None,
+        "meter_type": account.get("meterType"),
+    }
+
+
 class WatercareCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Fetch Watercare usage on a schedule and publish statistics."""
 
@@ -132,15 +159,7 @@ class WatercareCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         daily_average = latest_period.get("statistics", {}).get("dailyAverage", 0)
 
         billing_period_usage = latest_period.get("waterUsage", 0)
-
-        number_of_days = (
-            datetime.strptime(
-                latest_period.get("billingPeriodToDate"), "%Y-%m-%dT%H:%M:%S.%fZ"
-            )
-            - datetime.strptime(
-                latest_period.get("billingPeriodFromDate"), "%Y-%m-%dT%H:%M:%S.%fZ"
-            )
-        ).days + 1
+        number_of_days = _period_days(latest_period)
 
         cost_breakdown = self._calculate_cost(billing_period_usage, number_of_days)
 
@@ -150,8 +169,6 @@ class WatercareCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "billing_period_from": latest_period.get("billingPeriodFromDate"),
             "billing_period_to": latest_period.get("billingPeriodToDate"),
             "reading_type": latest_period.get("readingType"),
-            "account_balance": latest_period.get("accountBalance"),
-            "amount_due": latest_period.get("amountDue"),
             "household_efficiency_band": latest_period.get("statistics", {})
             .get("efficiency", {})
             .get("currentHouseholdBand"),
@@ -166,6 +183,8 @@ class WatercareCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "endpoint": self.endpoint,
             "cost_currency": "NZD",
         }
+
+        attributes.update(_account_attributes(self.api.account))
 
         # Generate external statistics for Energy Dashboard
         await self._generate_statistics(billing_periods)
@@ -202,14 +221,7 @@ class WatercareCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     period_usage = period.get("waterUsage", 0)
                     running_sum += period_usage
 
-                    number_of_days = (
-                        datetime.strptime(
-                            period.get("billingPeriodToDate"), "%Y-%m-%dT%H:%M:%S.%fZ"
-                        )
-                        - datetime.strptime(
-                            period.get("billingPeriodFromDate"), "%Y-%m-%dT%H:%M:%S.%fZ"
-                        )
-                    ).days + 1
+                    number_of_days = _period_days(period)
 
                     cost_breakdown = self._calculate_cost(period_usage, number_of_days)
                     cost_running_sum += cost_breakdown["total"]
@@ -362,8 +374,6 @@ class WatercareCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "wastewater_rate_per_1000L": self.wastewater_rate,
             "endpoint": self.endpoint,
             "cost_currency": "NZD",
-            "account_balance": parsed_data.get("accountBalance"),
-            "amount_due": parsed_data.get("amountDue"),
             "reading_type": parsed_data.get("readingType"),
             "currentPeriodAverage": statistic_data.get("currentPeriodAverage"),
             "differenceToPreviousPeriod": statistic_data.get(
@@ -482,5 +492,7 @@ class WatercareCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             async_add_external_statistics(
                 self.hass, wastewater_cost_metadata, wastewater_cost_statistics
             )
+
+        attributes.update(_account_attributes(self.api.account))
 
         return {"native_value": yesterday_consumption, "attributes": attributes}

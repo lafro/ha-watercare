@@ -64,11 +64,18 @@ DATA_SCHEMA = vol.Schema(
 )
 
 
-async def _validate_login(email: str, password: str) -> str | None:
-    """Check credentials against Watercare; return the account number."""
+async def _validate_login(email: str, password: str) -> tuple[str | None, dict | None]:
+    """Check credentials against Watercare; return (account number, account)."""
     api = WatercareApi(email, password)
     await api.get_refresh_token()
-    return api.account_number
+    return api.account_number, api.account
+
+
+def _endpoint_for(account: dict | None) -> str:
+    """Pick the data source Watercare's own meter type implies."""
+    if account and str(account.get("meterType", "")).lower() == "mechanical":
+        return "mechanicalmonthly"
+    return DEFAULT_ENDPOINT
 
 
 class WatercareConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -84,7 +91,7 @@ class WatercareConfigFlow(ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             try:
-                account = await _validate_login(
+                account, record = await _validate_login(
                     user_input[CONF_USERNAME], user_input[CONF_PASSWORD]
                 )
             except WatercareAuthError:
@@ -105,8 +112,15 @@ class WatercareConfigFlow(ConfigFlow, domain=DOMAIN):
                             CONF_PASSWORD: user_input[CONF_PASSWORD],
                         },
                         options={
-                            key: user_input.get(key, default)
-                            for key, default in RATE_DEFAULTS.items()
+                            **{
+                                key: user_input.get(key, default)
+                                for key, default in RATE_DEFAULTS.items()
+                            },
+                            # Watercare tells us the meter type; trust it over
+                            # the form default unless the user chose otherwise.
+                            CONF_ENDPOINT: user_input.get(
+                                CONF_ENDPOINT, _endpoint_for(record)
+                            ),
                         },
                     )
 

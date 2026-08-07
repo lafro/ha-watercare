@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Connect to Watercare",
-        "description": "Sign in with your Watercare account. The rates are listed on your bill under 'Charge details' — Watercare changes prices every July, so re-check them then.",
+        "description": "Sign in with your Watercare account. The rates are listed on your bill under 'Charge details' \u2014 Watercare changes prices every July, so re-check them then.",
         "data": {
           "username": "Email",
           "password": "Password",
@@ -14,8 +14,8 @@
           "annual_line_charge": "Fixed wastewater charge ($ per year)"
         },
         "data_description": {
-          "endpoint": "Choose 'Monthly Billing Periods' for mechanical (non-smart) meters. The smart meter options only work once Watercare has installed one.",
-          "wastewater_ratio": "Fraction of water volume billed as wastewater — shown on the bill as e.g. '@78.50%', entered here as 0.785.",
+          "endpoint": "Defaults to the meter type Watercare reports for your account. The smart meter options only work once Watercare has installed one.",
+          "wastewater_ratio": "Fraction of water volume billed as wastewater \u2014 shown on the bill as e.g. '@78.50%', entered here as 0.785.",
           "annual_line_charge": "Shown on the bill under 'Fixed charges' as a 'pa' amount."
         }
       },
@@ -29,7 +29,7 @@
     },
     "error": {
       "invalid_auth": "Watercare rejected the email or password",
-      "cannot_connect": "Could not connect to Watercare — try again shortly"
+      "cannot_connect": "Could not connect to Watercare \u2014 try again shortly"
     },
     "abort": {
       "already_configured": "This Watercare account is already configured",
@@ -49,8 +49,9 @@
           "annual_line_charge": "Fixed wastewater charge ($ per year)"
         },
         "data_description": {
-          "wastewater_ratio": "Fraction of water volume billed as wastewater — shown on the bill as e.g. '@78.50%', entered here as 0.785.",
-          "annual_line_charge": "Shown on the bill under 'Fixed charges' as a 'pa' amount."
+          "wastewater_ratio": "Fraction of water volume billed as wastewater \u2014 shown on the bill as e.g. '@78.50%', entered here as 0.785.",
+          "annual_line_charge": "Shown on the bill under 'Fixed charges' as a 'pa' amount.",
+          "endpoint": "Choose the source matching your meter. On a mechanical meter the smart meter options return no data."
         }
       }
     }
