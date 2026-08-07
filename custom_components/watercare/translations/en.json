@@ -1,0 +1,58 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to Watercare",
+        "description": "Sign in with your Watercare account. The rates are listed on your bill under 'Charge details' — Watercare changes prices every July, so re-check them then.",
+        "data": {
+          "username": "Email",
+          "password": "Password",
+          "endpoint": "Meter data source",
+          "consumption_rate": "Water rate ($ per kL, incl. GST)",
+          "wastewater_rate": "Wastewater rate ($ per kL, incl. GST)",
+          "wastewater_ratio": "Wastewater ratio",
+          "annual_line_charge": "Fixed wastewater charge ($ per year)"
+        },
+        "data_description": {
+          "endpoint": "Choose 'Monthly Billing Periods' for mechanical (non-smart) meters. The smart meter options only work once Watercare has installed one.",
+          "wastewater_ratio": "Fraction of water volume billed as wastewater — shown on the bill as e.g. '@78.50%', entered here as 0.785.",
+          "annual_line_charge": "Shown on the bill under 'Fixed charges' as a 'pa' amount."
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate Watercare",
+        "description": "The stored password for {username} no longer works. Enter the current Watercare password.",
+        "data": {
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Watercare rejected the email or password",
+      "cannot_connect": "Could not connect to Watercare — try again shortly"
+    },
+    "abort": {
+      "already_configured": "This Watercare account is already configured",
+      "reauth_successful": "Re-authentication was successful"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Watercare options",
+        "description": "Rates come from your bill's 'Charge details' section and change every July.",
+        "data": {
+          "endpoint": "Meter data source",
+          "consumption_rate": "Water rate ($ per kL, incl. GST)",
+          "wastewater_rate": "Wastewater rate ($ per kL, incl. GST)",
+          "wastewater_ratio": "Wastewater ratio",
+          "annual_line_charge": "Fixed wastewater charge ($ per year)"
+        },
+        "data_description": {
+          "wastewater_ratio": "Fraction of water volume billed as wastewater — shown on the bill as e.g. '@78.50%', entered here as 0.785.",
+          "annual_line_charge": "Shown on the bill under 'Fixed charges' as a 'pa' amount."
+        }
+      }
+    }
+  }
+}

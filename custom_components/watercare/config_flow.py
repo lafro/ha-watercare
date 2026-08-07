@@ -1,11 +1,23 @@
 """Config flow for Watercare integration."""
 
+from __future__ import annotations
+
 import logging
+from collections.abc import Mapping
+from typing import Any
+
 import voluptuous as vol
 
-from homeassistant import config_entries
-from homeassistant.const import CONF_USERNAME, CONF_PASSWORD
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlow,
+)
+from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
+from homeassistant.core import callback
 
+from .api import WatercareApi, WatercareAuthError
 from .const import (
     DOMAIN,
     CONF_CONSUMPTION_RATE,
@@ -22,6 +34,14 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+RATE_DEFAULTS = {
+    CONF_ENDPOINT: DEFAULT_ENDPOINT,
+    CONF_CONSUMPTION_RATE: DEFAULT_CONSUMPTION_RATE,
+    CONF_WASTEWATER_RATE: DEFAULT_WASTEWATER_RATE,
+    CONF_WASTEWATER_RATIO: DEFAULT_WASTEWATER_RATIO,
+    CONF_ANNUAL_LINE_CHARGE: DEFAULT_ANNUAL_LINE_CHARGE,
+}
 
 DATA_SCHEMA = vol.Schema(
     {
@@ -44,56 +64,114 @@ DATA_SCHEMA = vol.Schema(
 )
 
 
-class WatercareConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+async def _validate_login(email: str, password: str) -> str | None:
+    """Check credentials against Watercare; return the account number."""
+    api = WatercareApi(email, password)
+    await api.get_refresh_token()
+    return api.account_number
+
+
+class WatercareConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Watercare."""
 
     VERSION = 1
 
-    async def async_step_user(self, user_input=None):
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         """Handle the initial step."""
-        if user_input is None:
-            return self.async_show_form(
-                step_id="user",
-                data_schema=DATA_SCHEMA,
-            )
+        errors: dict[str, str] = {}
 
-        return self.async_create_entry(
-            title="Watercare",
-            data={
-                CONF_USERNAME: user_input[CONF_USERNAME],
-                CONF_PASSWORD: user_input[CONF_PASSWORD],
-                CONF_ENDPOINT: user_input.get(CONF_ENDPOINT, DEFAULT_ENDPOINT),
-                CONF_CONSUMPTION_RATE: user_input.get(
-                    CONF_CONSUMPTION_RATE, DEFAULT_CONSUMPTION_RATE
-                ),
-                CONF_WASTEWATER_RATE: user_input.get(
-                    CONF_WASTEWATER_RATE, DEFAULT_WASTEWATER_RATE
-                ),
-                CONF_WASTEWATER_RATIO: user_input.get(
-                    CONF_WASTEWATER_RATIO, DEFAULT_WASTEWATER_RATIO
-                ),
-                CONF_ANNUAL_LINE_CHARGE: user_input.get(
-                    CONF_ANNUAL_LINE_CHARGE, DEFAULT_ANNUAL_LINE_CHARGE
-                ),
-            },
+        if user_input is not None:
+            try:
+                account = await _validate_login(
+                    user_input[CONF_USERNAME], user_input[CONF_PASSWORD]
+                )
+            except WatercareAuthError:
+                errors["base"] = "invalid_auth"
+            except Exception:  # noqa: BLE001 - surface anything else as connection trouble
+                _LOGGER.exception("Unexpected error validating Watercare credentials")
+                errors["base"] = "cannot_connect"
+            else:
+                if not account:
+                    errors["base"] = "cannot_connect"
+                else:
+                    await self.async_set_unique_id(str(account))
+                    self._abort_if_unique_id_configured()
+                    return self.async_create_entry(
+                        title="Watercare",
+                        data={
+                            CONF_USERNAME: user_input[CONF_USERNAME],
+                            CONF_PASSWORD: user_input[CONF_PASSWORD],
+                        },
+                        options={
+                            key: user_input.get(key, default)
+                            for key, default in RATE_DEFAULTS.items()
+                        },
+                    )
+
+        return self.async_show_form(
+            step_id="user", data_schema=DATA_SCHEMA, errors=errors
+        )
+
+    async def async_step_reauth(
+        self, entry_data: Mapping[str, Any]
+    ) -> ConfigFlowResult:
+        """Handle reauthentication when Watercare rejects the credentials."""
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Ask for the new password and revalidate."""
+        errors: dict[str, str] = {}
+        entry = self._get_reauth_entry()
+        username = entry.data.get(CONF_USERNAME) or entry.data.get("email")
+
+        if user_input is not None:
+            try:
+                await _validate_login(username, user_input[CONF_PASSWORD])
+            except WatercareAuthError:
+                errors["base"] = "invalid_auth"
+            except Exception:  # noqa: BLE001
+                _LOGGER.exception("Unexpected error during Watercare reauth")
+                errors["base"] = "cannot_connect"
+            else:
+                return self.async_update_reload_and_abort(
+                    entry,
+                    data_updates={
+                        CONF_USERNAME: username,
+                        CONF_PASSWORD: user_input[CONF_PASSWORD],
+                    },
+                )
+
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=vol.Schema({vol.Required(CONF_PASSWORD): str}),
+            description_placeholders={"username": username or ""},
+            errors=errors,
         )
 
     @staticmethod
-    def async_get_options_flow(config_entry):
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> WatercareOptionsFlowHandler:
         """Get the options flow for this handler."""
-        return WatercareOptionsFlowHandler(config_entry)
+        return WatercareOptionsFlowHandler()
 
 
-class WatercareOptionsFlowHandler(config_entries.OptionsFlowWithConfigEntry):
+class WatercareOptionsFlowHandler(OptionsFlow):
     """Handle options."""
 
-    def __init__(self, config_entry):
-        """Initialize options flow."""
-
-    async def async_step_init(self, user_input=None):
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         """Manage the options."""
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
+
+        # Show saved options first, then values from initial setup, then the
+        # built-in defaults.
+        current = {**self.config_entry.data, **self.config_entry.options}
 
         return self.async_show_form(
             step_id="init",
@@ -101,31 +179,29 @@ class WatercareOptionsFlowHandler(config_entries.OptionsFlowWithConfigEntry):
                 {
                     vol.Optional(
                         CONF_ENDPOINT,
-                        default=self.config_entry.data.get(
-                            CONF_ENDPOINT, DEFAULT_ENDPOINT
-                        ),
+                        default=current.get(CONF_ENDPOINT, DEFAULT_ENDPOINT),
                     ): vol.In(ENDPOINT_OPTIONS),
                     vol.Optional(
                         CONF_CONSUMPTION_RATE,
-                        default=self.config_entry.data.get(
+                        default=current.get(
                             CONF_CONSUMPTION_RATE, DEFAULT_CONSUMPTION_RATE
                         ),
                     ): vol.Coerce(float),
                     vol.Optional(
                         CONF_WASTEWATER_RATE,
-                        default=self.config_entry.data.get(
+                        default=current.get(
                             CONF_WASTEWATER_RATE, DEFAULT_WASTEWATER_RATE
                         ),
                     ): vol.Coerce(float),
                     vol.Optional(
                         CONF_WASTEWATER_RATIO,
-                        default=self.config_entry.data.get(
+                        default=current.get(
                             CONF_WASTEWATER_RATIO, DEFAULT_WASTEWATER_RATIO
                         ),
                     ): vol.Coerce(float),
                     vol.Optional(
                         CONF_ANNUAL_LINE_CHARGE,
-                        default=self.config_entry.data.get(
+                        default=current.get(
                             CONF_ANNUAL_LINE_CHARGE, DEFAULT_ANNUAL_LINE_CHARGE
                         ),
                     ): vol.Coerce(float),

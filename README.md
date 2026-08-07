@@ -1,77 +1,56 @@
-# Watercare integration for Home Assistant
+# Watercare for Home Assistant
 
-Monitor your water consumption and costs with detailed usage tracking, cost calculations, and Energy Dashboard integration.
+An unofficial Home Assistant integration for Watercare (Auckland) water accounts. It signs in with your Watercare credentials, fetches your usage, and calculates costs from the rates on your bill.
 
-## Data Source Options
+Forked from [brunsy/ha-watercare](https://github.com/brunsy/ha-watercare).
 
-Choose the appropriate data source based on your meter type:
-
-### Non-Smart Meters
-
-- **Monthly Billing Periods** - Shows billing period summaries from meter readings
-
-### Smart Meters
-
-- **Half-hourly Usage** (Default)
-- **Daily Usage with Statistics**
-- **Monthly Usage**
-
-Most users with traditional meters should use the default option. Smart meter users can choose based on their preferred level of detail.
-
-![Smart Meter Water Usage in Energy Dashboard](/homeassistant-water-graph.png "Energy Dashboard Reporting")
-![Mechanical Meter Water Usage in Energy Dashboard](/homeassistant-water-graph-mechanicalmonthly.png "Energy Dashboard Reporting")
-
-## Getting started
-
-You will need an existing Watercare account. Smart meter users have access to detailed hourly and daily reporting, while traditional meter users can view monthly billing period summaries.
+> [!IMPORTANT]
+> This project is not affiliated with, endorsed by or supported by Watercare Services Limited. It uses the endpoints of Watercare's customer app, which may change without notice.
 
 ## Installation
 
-Once installed, set up from the `Devices and services` area with the following configuration:
+### Method 1: HACS
 
-### Required Configuration
+[![Open your Home Assistant instance and open this repository in HACS.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=lafro&repository=ha-watercare&category=integration)
 
-- **Username**: Your Watercare account username
-- **Password**: Your Watercare account password
+Or add it in HACS yourself: open the menu (⋮), select **Custom repositories**, add `https://github.com/lafro/ha-watercare` with type **Integration**, then download **Watercare**.
 
-### Optional Configuration
+### Method 2: Manually
 
-- **Data Source**: Choose the appropriate endpoint for your meter type (see Data Source Options above)
-- **Consumption Rate**: Cost per 1000L for water consumption (default: $2.296 NZD)
-- **Wastewater Rate**: Cost per 1000L for wastewater processing (default: $3.994 NZD)
-- **Wastewater ratio**: Ratio of assumed wastewater usage by Watercare. Apartments are charged at 95 (default 0.785)
-- **Annual Fixed charge**: Annual fixed charge per meter (default: $332 NZD)
+Download the latest release and copy the `custom_components/watercare` folder into your `config/custom_components` folder.
 
-The rates can be configured during initial setup or modified later through the integration's options.
+After either method, restart Home Assistant, then add the integration under **Settings → Devices & services** and sign in with your Watercare account.
 
-## Energy Dashboard Integration
+Requires Home Assistant 2026.3 or newer.
 
-This integration provides the following statistics for Home Assistant's Energy Dashboard:
+## Configuration
 
-- **Water Consumption**: Tracks total water usage over time
-- **Water Costs**: Calculates and tracks total water costs
-- **Consumption Costs**: Separate tracking of water consumption charges
-- **Wastewater Costs**: Separate tracking of wastewater processing charges
+Choose the data source that matches your meter. If your bill shows monthly readings (marked *Estimate* or *Actual*), you have a mechanical meter — use *Monthly Billing Periods*. If you have a smart meter, use one of the smart-meter sources.
 
-### HACS (recommended)
+> [!NOTE]
+> Only *Monthly Billing Periods* has been tested. The smart-meter sources come from the original project and I don't have a smart meter to test them with.
 
-1. [Install HACS](https://hacs.xyz/docs/setup/download), if you did not already
-2. [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=brunsy&repository=ha-watercare&category=integration)
-3. Install the Watercare integration
-4. Restart Home Assistant
+The rate fields correspond to the *Charge details* section of a Watercare bill. Costs are calculated locally from these rates — Watercare doesn't provide cost data — so they're only as accurate as the rates you enter. Prices change on 1 July each year; the rates can be updated in the integration's options at any time.
 
-### Manually
+## Entities
 
-Copy all files in the custom*components/watercare folder to your Home Assistant folder \_config/custom_components/watercare*.
+| Entity | |
+|---|---|
+| Current bill usage | Litres used this billing period. Mechanical meters are billed in whole kilolitres, so this changes in 1,000 L steps. |
+| Current bill cost | Cost of the period so far, from the configured rates. |
+| Daily average | Average daily use this period. |
+| Billing period end | When the current billing period ends. |
+| Reading type | Whether the latest reading was an estimate or an actual read. |
+| Household efficiency band | Watercare's usage band for the household size. |
+| Account balance | Balance on the account, when Watercare reports it. |
+| Amount due | Amount owing, when Watercare reports it. |
 
-## Known issues
+**Billing period end**, **Reading type** and **Household efficiency band** are diagnostic entities. **Account balance** and **Amount due** are disabled by default, as Watercare doesn't report them for all accounts.
 
-## Future enhancements
+## Energy dashboard
 
-Your support is welcomed.
+The integration imports long-term statistics. In **Settings → Dashboards → Energy**, add *Watercare Water Consumption* as a water source, with *Watercare Total Cost* as the entity tracking its cost.
 
-- Support for multiple properties/accounts
+## Licence
 
-## Acknowledgements
-
-This integration is not supported / endorsed by, nor affiliated with, Watercare.
+MIT.

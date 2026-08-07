@@ -1,13 +1,13 @@
 {
   "domain": "watercare",
   "name": "Watercare",
-  "codeowners": ["@brunsy"],
+  "codeowners": ["@brunsy", "@lafro"],
   "config_flow": true,
   "dependencies": ["recorder"],
-  "documentation": "https://github.com/brunsy/ha-watercare",
-  "integration_type": "hub",
+  "documentation": "https://github.com/lafro/ha-watercare",
+  "integration_type": "service",
   "iot_class": "cloud_polling",
-  "issue_tracker": "https://github.com/brunsy/ha-watercare/issues",
-  "requirements": ["aiohttp", "pytz", "voluptuous"],
-  "version": "1.1.0"
+  "issue_tracker": "https://github.com/lafro/ha-watercare/issues",
+  "requirements": ["pytz"],
+  "version": "1.2.2"
 }
