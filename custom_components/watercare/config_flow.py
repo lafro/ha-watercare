@@ -30,11 +30,14 @@ from .const import (
     DEFAULT_WASTEWATER_RATIO,
     DEFAULT_ANNUAL_LINE_CHARGE,
     DEFAULT_ENDPOINT,
-    ENDPOINT_OPTIONS,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
+# The endpoint is fixed to DEFAULT_ENDPOINT (mechanicalmonthly) -- it is no
+# longer a user choice -- but it is still written into every entry's options
+# under CONF_ENDPOINT via this dict, so the coordinator keeps reading it the
+# same way it always has (see coordinator.py's endpoint dispatch comment).
 RATE_DEFAULTS = {
     CONF_ENDPOINT: DEFAULT_ENDPOINT,
     CONF_CONSUMPTION_RATE: DEFAULT_CONSUMPTION_RATE,
@@ -47,7 +50,6 @@ DATA_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_USERNAME): str,
         vol.Required(CONF_PASSWORD): str,
-        vol.Optional(CONF_ENDPOINT, default=DEFAULT_ENDPOINT): vol.In(ENDPOINT_OPTIONS),
         vol.Optional(
             CONF_CONSUMPTION_RATE, default=DEFAULT_CONSUMPTION_RATE
         ): vol.Coerce(float),
@@ -71,13 +73,6 @@ async def _validate_login(email: str, password: str) -> tuple[str | None, dict |
     return api.account_number, api.account
 
 
-def _endpoint_for(account: dict | None) -> str:
-    """Pick the data source Watercare's own meter type implies."""
-    if account and str(account.get("meterType", "")).lower() == "mechanical":
-        return "mechanicalmonthly"
-    return DEFAULT_ENDPOINT
-
-
 class WatercareConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Watercare."""
 
@@ -91,7 +86,10 @@ class WatercareConfigFlow(ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             try:
-                account, record = await _validate_login(
+                # _validate_login also returns the v1/account record, but
+                # nothing here needs it now that the data source is fixed
+                # rather than inferred from the reported meter type.
+                account, _ = await _validate_login(
                     user_input[CONF_USERNAME], user_input[CONF_PASSWORD]
                 )
             except WatercareAuthError:
@@ -111,16 +109,12 @@ class WatercareConfigFlow(ConfigFlow, domain=DOMAIN):
                             CONF_USERNAME: user_input[CONF_USERNAME],
                             CONF_PASSWORD: user_input[CONF_PASSWORD],
                         },
+                        # RATE_DEFAULTS includes CONF_ENDPOINT: DEFAULT_ENDPOINT,
+                        # so every new entry is created with the endpoint fixed
+                        # to mechanicalmonthly (see the RATE_DEFAULTS comment).
                         options={
-                            **{
-                                key: user_input.get(key, default)
-                                for key, default in RATE_DEFAULTS.items()
-                            },
-                            # Watercare tells us the meter type; trust it over
-                            # the form default unless the user chose otherwise.
-                            CONF_ENDPOINT: user_input.get(
-                                CONF_ENDPOINT, _endpoint_for(record)
-                            ),
+                            key: user_input.get(key, default)
+                            for key, default in RATE_DEFAULTS.items()
                         },
                     )
 
@@ -191,10 +185,6 @@ class WatercareOptionsFlowHandler(OptionsFlow):
             step_id="init",
             data_schema=vol.Schema(
                 {
-                    vol.Optional(
-                        CONF_ENDPOINT,
-                        default=current.get(CONF_ENDPOINT, DEFAULT_ENDPOINT),
-                    ): vol.In(ENDPOINT_OPTIONS),
                     vol.Optional(
                         CONF_CONSUMPTION_RATE,
                         default=current.get(

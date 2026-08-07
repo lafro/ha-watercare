@@ -19,6 +19,15 @@ class WatercareAuthError(Exception):
     """Raised when Watercare rejects the credentials or sign-in flow."""
 
 
+class WatercareConnectionError(Exception):
+    """Raised for transient/connection problems that are not a credentials issue.
+
+    E.g. sign-in succeeded but the account record could not be fetched. This
+    must not trigger Home Assistant's reauth flow, since the user's
+    credentials are not at fault.
+    """
+
+
 class WatercareApi:
     """Define the Watercare API."""
 
@@ -303,14 +312,23 @@ class WatercareApi:
 
         # Authenticate fully on first use. On later polls, proactively refresh
         # the short-lived access token while retaining the account number.
+        # Either path may call get_refresh_token(), which performs its own
+        # account fetch -- so `just_authenticated` tracks that, and the
+        # unconditional get_accounts() below is skipped in that case. This
+        # keeps every poll to exactly one v1/account request instead of two.
         # WatercareAuthError from the sign-in dance propagates to the caller,
         # which lets Home Assistant start a reauth flow.
+        just_authenticated = False
         if not self._accountNumber:
             _LOGGER.debug("No account number found, starting authentication process")
             await self.get_refresh_token()
+            just_authenticated = True
             if not self._accountNumber:
-                raise WatercareAuthError(
-                    "Authentication succeeded but no account number was found"
+                # Sign-in itself succeeded (no WatercareAuthError was raised),
+                # but no account came back -- a data/connection problem, not
+                # bad credentials, so this must not trigger reauth.
+                raise WatercareConnectionError(
+                    "Authenticated but no account number returned"
                 )
         elif self._access_token_is_expired():
             if not await self.get_api_token():
@@ -318,12 +336,23 @@ class WatercareApi:
                     "Refresh token unavailable or expired; authenticating again"
                 )
                 await self.get_refresh_token()
-                if not self._accountNumber or not self._token:
+                just_authenticated = True
+                if not self._token:
+                    # Re-login itself failed to yield a token: an auth problem.
                     raise WatercareAuthError("Watercare reauthentication failed")
+                if not self._accountNumber:
+                    # Logged in fine but the account fetch failed: a connection
+                    # problem, not credentials -- must not trigger reauth.
+                    raise WatercareConnectionError(
+                        "Authenticated but no account number returned"
+                    )
 
-        # Refresh the account record each poll so balance, amount due and due
-        # date stay current; it is a small request and only runs twice a day.
-        await self.get_accounts()
+        if not just_authenticated:
+            # Refresh the account record each poll so balance, amount due and
+            # due date stay current; it is a small request and only runs
+            # twice a day. (When we just authenticated above,
+            # get_refresh_token() already did this as part of signing in.)
+            await self.get_accounts()
 
         url = f"{self._url_base}v1/usage/{self._accountNumber}/{endpoint}"
         if start_date and end_date:

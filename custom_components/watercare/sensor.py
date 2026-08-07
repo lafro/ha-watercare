@@ -16,7 +16,7 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.const import EntityCategory, UnitOfVolume
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -29,10 +29,13 @@ _LOGGER = logging.getLogger(__name__)
 READING_TYPES = {"E": "Estimate", "A": "Actual"}
 
 # The billing-period endpoints only ever return *completed* periods, so the
-# newest one is the last issued bill -- not a period still accruing. The daily
-# smart-meter endpoint reports yesterday. Name the entities for what they hold.
+# newest one is the last issued bill -- not a period still accruing. Name the
+# entities for what they hold. Only "mechanicalmonthly" is reachable today
+# (see coordinator.py's endpoint dispatch comment), so "default" is always
+# used; a re-added smart-meter endpoint (e.g. the daily one, which reports
+# yesterday rather than a billing period) would add its own dict entry here,
+# keyed by endpoint name, the same way "dailywithstats" used to be.
 PERIOD_LABELS = {
-    "dailywithstats": {"usage": "Yesterday's usage", "cost": "Yesterday's cost"},
     "default": {"usage": "Last bill usage", "cost": "Last bill cost"},
 }
 
@@ -67,16 +70,20 @@ class WatercareSensorDescription(SensorEntityDescription):
     value_fn: Callable[[dict[str, Any]], Any]
 
 
-# The billing-period sensors mirror the mechanical-meter (billing periods)
-# endpoints. On the dailywithstats endpoint some source keys are absent and
-# the affected sensors read "unknown" — acceptable until the smart-meter
-# paths can be tested for real.
+# The billing-period sensors mirror the mechanical-meter billing-period
+# payload. A re-added smart-meter endpoint may not carry every source key
+# these rely on, in which case the affected sensors read "unknown" --
+# acceptable, but worth testing for real before that path ships.
 SENSOR_DESCRIPTIONS: tuple[WatercareSensorDescription, ...] = (
     WatercareSensorDescription(
         key="current_bill_cost",
         device_class=SensorDeviceClass.MONETARY,
         native_unit_of_measurement="NZD",
-        state_class=SensorStateClass.TOTAL,
+        # Deliberately no state_class, same reasoning as the usage entity
+        # above: this is a per-billing-period total that resets each period,
+        # not a monotonically increasing value, so a state_class would make
+        # HA compile a bogus auto-statistic. Matches account_balance /
+        # amount_due below, which correctly have no state_class either.
         suggested_display_precision=2,
         value_fn=lambda data: _attr(data, "current_period_cost"),
     ),
@@ -86,6 +93,7 @@ SENSOR_DESCRIPTIONS: tuple[WatercareSensorDescription, ...] = (
         native_unit_of_measurement=UnitOfVolume.LITERS,
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:water-percent",
+        suggested_display_precision=0,
         value_fn=lambda data: _attr(data, "daily_average"),
     ),
     WatercareSensorDescription(
@@ -146,6 +154,13 @@ SENSOR_DESCRIPTIONS: tuple[WatercareSensorDescription, ...] = (
         entity_registry_enabled_default=False,
         value_fn=lambda data: _attr(data, "overdue_amount"),
     ),
+    WatercareSensorDescription(
+        key="meter_number",
+        name="Meter number",
+        icon="mdi:identifier",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda data: _attr(data, "meter_number"),
+    ),
 )
 
 
@@ -168,14 +183,17 @@ async def async_setup_entry(
 def _device_info(
     entry: WatercareConfigEntry, coordinator: WatercareCoordinator
 ) -> DeviceInfo:
-    account = coordinator.api.account or {}
-    meters = account.get("meters") or [{}]
+    # This device represents a cloud account (Watercare's API), not one
+    # physical meter, so it is a service rather than a piece of hardware --
+    # and the meter id is not this device's serial number. The meter id is
+    # instead exposed as its own diagnostic sensor (see "meter_number" in
+    # SENSOR_DESCRIPTIONS).
     return DeviceInfo(
         identifiers={(DOMAIN, entry.entry_id)},
         name="Watercare",
         manufacturer="Watercare Services",
         model="Water account",
-        serial_number=meters[0].get("id"),
+        entry_type=DeviceEntryType.SERVICE,
         configuration_url="https://myaccount.watercare.co.nz/",
     )
 
@@ -193,8 +211,15 @@ class WatercareUsageSensor(
     _attr_has_entity_name = True
     _attr_icon = "mdi:water"
     _attr_device_class = SensorDeviceClass.WATER
-    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    # Deliberately no state_class: this value is a per-billing-period total
+    # that rises and falls (a new period restarts from zero), not a
+    # monotonically increasing counter. Giving it a state_class makes HA
+    # compile a bogus auto-generated statistic for it, which also shadows the
+    # correct external `watercare:water_consumption` statistic in the Energy
+    # dashboard's picker. Energy-dashboard data comes from that external
+    # statistic (see coordinator._generate_statistics), not from this entity.
     _attr_native_unit_of_measurement = UnitOfVolume.LITERS
+    _attr_suggested_display_precision = 0
 
     def __init__(
         self, entry: WatercareConfigEntry, coordinator: WatercareCoordinator

@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
-import pytz
+import aiohttp
 
 from homeassistant.components.recorder.models import (
     StatisticData,
@@ -26,13 +26,8 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .api import WatercareApi, WatercareAuthError
-from .const import (
-    DOMAIN,
-    NZ_TIMEZONE,
-    ENDPOINT_DISPLAY_NAMES,
-    STATISTIC_TYPES,
-)
+from .api import WatercareApi, WatercareAuthError, WatercareConnectionError
+from .const import DOMAIN, NZ_TIMEZONE
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -63,6 +58,7 @@ def _account_attributes(account: dict[str, Any] | None) -> dict[str, Any]:
         "overdue_amount": account.get("overdueAmount"),
         "payment_due_date": account.get("dueDate") if account.get("hasDueDate") else None,
         "meter_type": account.get("meterType"),
+        "meter_number": (account.get("meters") or [{}])[0].get("id"),
     }
 
 
@@ -102,15 +98,37 @@ class WatercareCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             response = await self.api.get_data(endpoint=self.endpoint)
         except WatercareAuthError as err:
             # Puts the entry into the "needs attention" reauth state instead
-            # of failing silently in the logs.
+            # of failing silently in the logs. Reserved for cases where
+            # Watercare itself rejected the credentials or sign-in flow.
             raise ConfigEntryAuthFailed(str(err)) from err
+        except (WatercareConnectionError, aiohttp.ClientError) as err:
+            # Transient/connection problems are not a credentials problem --
+            # do not send the user into reauth for these.
+            raise UpdateFailed(str(err)) from err
 
         if response is None:
             raise UpdateFailed("No response received from the Watercare API")
 
-        if self.endpoint == "dailywithstats":
-            return await self._process_daily_data(response)
-        # mechanicalmonthly, monthly, halfhourly all use billing periods.
+        # --- Endpoint dispatch -------------------------------------------
+        # Only the mechanical-meter billing-period endpoint (mechanicalmonthly)
+        # is processed. Smart-meter support (dailywithstats, monthly,
+        # halfhourly) was removed: it was inherited from the upstream project,
+        # untested, and had known defects (wrong period naming, an assumed
+        # payload shape, a timezone bug in the daily path). const.py's
+        # ENDPOINT_OPTIONS/ENDPOINT_DISPLAY_NAMES/STATISTIC_TYPES still
+        # document those endpoints for when this is revisited.
+        #
+        # To re-add a smart-meter endpoint:
+        #   1. Re-expose it as a choice in config_flow.py's DATA_SCHEMA and in
+        #      WatercareOptionsFlowHandler's options schema (both currently
+        #      hard-select mechanicalmonthly via DEFAULT_ENDPOINT).
+        #   2. Add a `_process_<name>` method on this class that parses that
+        #      endpoint's payload and calls async_add_external_statistics for
+        #      its statistics, following the shape of `_process_data` below.
+        #   3. Branch on `self.endpoint` here to call it, e.g.:
+        #        if self.endpoint == "dailywithstats":
+        #            return await self._process_daily_data(response)
+        # -------------------------------------------------------------------
         return await self._process_data(response)
 
     def _calculate_cost(self, usage_litres, number_of_days):
@@ -131,14 +149,6 @@ class WatercareCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "line_charge": line_charge,
         }
 
-    def _get_statistic_name(self, statistic_type: str) -> str:
-        """Generate consistent statistic names based on endpoint and type."""
-        endpoint_name = ENDPOINT_DISPLAY_NAMES.get(
-            self.endpoint, self.endpoint.title()
-        )
-        type_name = STATISTIC_TYPES.get(statistic_type, statistic_type.title())
-        return f"Watercare {endpoint_name} {type_name}"
-
     async def _process_data(self, response: str) -> dict[str, Any]:
         """Process a billing-periods API response."""
         try:
@@ -148,7 +158,10 @@ class WatercareCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         _LOGGER.debug("Processing data: %s", billing_periods)
 
-        if not billing_periods:
+        # Guard against a malformed payload (e.g. a dict or string instead of
+        # the expected list of billing periods) before max()/.get() get a
+        # chance to throw and blank out every entity.
+        if not isinstance(billing_periods, list) or not billing_periods:
             raise UpdateFailed("No billing periods in the Watercare API response")
 
         # Get the most recent billing period for current usage. Sort rather
@@ -158,7 +171,9 @@ class WatercareCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         daily_average = latest_period.get("statistics", {}).get("dailyAverage", 0)
 
-        billing_period_usage = latest_period.get("waterUsage", 0)
+        # An explicit `null` for waterUsage becomes 0, matching what
+        # _generate_statistics already tolerates for the same field.
+        billing_period_usage = latest_period.get("waterUsage") or 0
         number_of_days = _period_days(latest_period)
 
         cost_breakdown = self._calculate_cost(billing_period_usage, number_of_days)
@@ -192,7 +207,34 @@ class WatercareCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return {"native_value": billing_period_usage, "attributes": attributes}
 
     async def _generate_statistics(self, billing_periods) -> None:
-        """Generate external statistics from billing period data."""
+        """Generate external statistics from billing period data.
+
+        Two deliberate design decisions live in this method:
+
+        (a) The running cumulative sums below are recomputed from zero over
+            every period the API returns, on every poll -- nothing is read
+            back from previously stored statistics. This is safe because
+            mechanicalmonthly returns the FULL billing history (observed: 4+
+            years in a single response), and it buys a useful property: if
+            Watercare corrects a past period from Estimate to Actual, that
+            correction propagates consistently into every later cumulative
+            sum, because each point is re-stamped at the same `start` and
+            simply overwritten with the new value. If Watercare ever started
+            returning only a sliding window instead of the full history, this
+            would need to read the last stored sum and add to it instead of
+            recomputing from scratch.
+
+        (b) The cost statistics below are calculated at self.consumption_rate
+            / self.wastewater_rate / self.annual_line_charge -- the tariff
+            currently configured, not whatever was configured historically.
+            Because (a) recomputes the entire history every poll, changing
+            the tariff (which reloads the config entry) retroactively
+            recomputes the ENTIRE cost-statistic history at the new rate.
+            That is intentional for this single flat-rate model -- it lets a
+            wrong rate be corrected after the fact -- but it does mean
+            historical cost figures reflect the current rate, not necessarily
+            what was actually charged/paid at the time.
+        """
         if not billing_periods:
             return
 
@@ -216,7 +258,9 @@ class WatercareCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 try:
                     # Parse and convert to NZ timezone
                     end_date = datetime.strptime(end_date_str, "%Y-%m-%dT%H:%M:%S.%fZ")
-                    end_date = pytz.utc.localize(end_date).astimezone(NZ_TIMEZONE)
+                    end_date = end_date.replace(tzinfo=timezone.utc).astimezone(
+                        NZ_TIMEZONE
+                    )
 
                     period_usage = period.get("waterUsage", 0)
                     running_sum += period_usage
@@ -327,172 +371,3 @@ class WatercareCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self.hass, wastewater_cost_metadata, wastewater_cost_statistics
             )
 
-    async def _process_daily_data(self, response: str) -> dict[str, Any]:
-        """Process the daily data (smart meters)."""
-        try:
-            parsed_data = json.loads(response)
-        except json.JSONDecodeError as err:
-            raise UpdateFailed(
-                "Failed to parse JSON response for dailywithstats endpoint"
-            ) from err
-
-        _LOGGER.debug(f"Parsed data: {parsed_data}")
-        usage_data = parsed_data.get("usage", [])
-        statistic_data = parsed_data.get("statistics", {})
-
-        litresRunningSum = 0
-        daily_consumption = {}
-
-        for entry in usage_data:
-            timestamp_str = entry.get("timestamp")
-            litres = entry.get("litres", 0)
-            timestamp = datetime.strptime(timestamp_str, "%Y-%m-%dT%H:%M:%S.%fZ")
-            timestamp = pytz.utc.localize(timestamp).astimezone(NZ_TIMEZONE)
-            date_str = timestamp.strftime("%Y-%m-%d")
-
-            daily_consumption[date_str] = daily_consumption.get(date_str, 0) + litres
-
-        _LOGGER.debug(f"Daily consumption: {daily_consumption}")
-
-        # Assign yesterday's consumption to state
-        yesterday_date = (datetime.now(NZ_TIMEZONE) - timedelta(days=1)).strftime(
-            "%Y-%m-%d"
-        )
-        yesterday_consumption = daily_consumption.get(yesterday_date, 0)
-        _LOGGER.debug(f"yesterday_consumption: {yesterday_consumption}")
-
-        # Calculate cost for yesterday's consumption
-        cost_breakdown = self._calculate_cost(yesterday_consumption, 1)
-
-        efficiency_data = statistic_data.get("efficiency", {})
-        attributes = {
-            "yesterday_consumption": yesterday_consumption,
-            "current_period_cost": round(cost_breakdown["total"], 2),
-            "current_period_cost_consumption": round(cost_breakdown["consumption"], 2),
-            "current_period_cost_wastewater": round(cost_breakdown["wastewater"], 2),
-            "consumption_rate_per_1000L": self.consumption_rate,
-            "wastewater_rate_per_1000L": self.wastewater_rate,
-            "endpoint": self.endpoint,
-            "cost_currency": "NZD",
-            "reading_type": parsed_data.get("readingType"),
-            "currentPeriodAverage": statistic_data.get("currentPeriodAverage"),
-            "differenceToPreviousPeriod": statistic_data.get(
-                "differenceToPreviousPeriod"
-            ),
-            "currentHouseholdBand": efficiency_data.get("currentHouseholdBand"),
-            "usageToLowerBand": efficiency_data.get("usageToLowerBand"),
-        }
-
-        # Generate statistics for daily data
-        day_statistics = []
-        cost_statistics = []
-        consumption_cost_statistics = []
-        wastewater_cost_statistics = []
-        running_cost_sum = 0
-        consumption_cost_running_sum = 0
-        wastewater_cost_running_sum = 0
-        first = True
-
-        for date, litres in daily_consumption.items():
-            start = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=NZ_TIMEZONE)
-
-            # HASSIO statistics requires us to add values as a sum of all previous values.
-            litresRunningSum += litres
-
-            # Calculate cost for this day
-            daily_cost_breakdown = self._calculate_cost(litres, 1)
-            running_cost_sum += daily_cost_breakdown["total"]
-            consumption_cost_running_sum += daily_cost_breakdown["consumption"]
-            wastewater_cost_running_sum += daily_cost_breakdown["wastewater"]
-
-            if first:
-                reset = start
-                first = False
-
-            day_statistics.append(
-                StatisticData(start=start, sum=litresRunningSum, last_reset=reset)
-            )
-
-            cost_statistics.append(StatisticData(start=start, sum=running_cost_sum))
-
-            if self.consumption_rate > 0:
-                consumption_cost_statistics.append(
-                    StatisticData(start=start, sum=consumption_cost_running_sum)
-                )
-
-            if self.wastewater_rate > 0:
-                wastewater_cost_statistics.append(
-                    StatisticData(start=start, sum=wastewater_cost_running_sum)
-                )
-
-        if day_statistics:
-            day_metadata = StatisticMetaData(
-                has_sum=True,
-                name=self._get_statistic_name("consumption"),
-                source=DOMAIN,
-                statistic_id=f"{DOMAIN}:daily_consumption",
-                unit_of_measurement=UnitOfVolume.LITERS,
-                mean_type=StatisticMeanType.NONE,
-                # Same as above: without "volume" the energy dashboard's water
-                # picker will not list this statistic.
-                unit_class="volume",
-            )
-
-            _LOGGER.debug(f"Adding {len(day_statistics)} daily consumption statistics")
-            async_add_external_statistics(self.hass, day_metadata, day_statistics)
-        else:
-            _LOGGER.warning("No daily statistics found, skipping update")
-
-        if cost_statistics:
-            cost_metadata = StatisticMetaData(
-                has_sum=True,
-                name="Watercare Daily Cost",
-                source=DOMAIN,
-                statistic_id=f"{DOMAIN}:daily_cost",
-                unit_of_measurement="NZD",
-                mean_type=StatisticMeanType.NONE,
-                unit_class=None,
-            )
-
-            _LOGGER.debug(f"Adding {len(cost_statistics)} daily cost statistics")
-            async_add_external_statistics(self.hass, cost_metadata, cost_statistics)
-
-        if consumption_cost_statistics and self.consumption_rate > 0:
-            consumption_cost_metadata = StatisticMetaData(
-                has_sum=True,
-                name="Watercare Daily Consumption Cost",
-                source=DOMAIN,
-                statistic_id=f"{DOMAIN}:daily_consumption_cost",
-                unit_of_measurement="NZD",
-                mean_type=StatisticMeanType.NONE,
-                unit_class=None,
-            )
-
-            _LOGGER.debug(
-                f"Adding {len(consumption_cost_statistics)} daily consumption cost statistics"
-            )
-            async_add_external_statistics(
-                self.hass, consumption_cost_metadata, consumption_cost_statistics
-            )
-
-        if wastewater_cost_statistics and self.wastewater_rate > 0:
-            wastewater_cost_metadata = StatisticMetaData(
-                has_sum=True,
-                name="Watercare Daily Wastewater Cost",
-                source=DOMAIN,
-                statistic_id=f"{DOMAIN}:daily_wastewater_cost",
-                unit_of_measurement="NZD",
-                mean_type=StatisticMeanType.NONE,
-                unit_class=None,
-            )
-
-            _LOGGER.debug(
-                f"Adding {len(wastewater_cost_statistics)} daily wastewater cost statistics"
-            )
-            async_add_external_statistics(
-                self.hass, wastewater_cost_metadata, wastewater_cost_statistics
-            )
-
-        attributes.update(_account_attributes(self.api.account))
-
-        return {"native_value": yesterday_consumption, "attributes": attributes}
