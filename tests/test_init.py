@@ -9,6 +9,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from freezegun.api import FrozenDateTimeFactory
+from homeassistant.components.recorder import Recorder
+from homeassistant.components.recorder import statistics as recorder_statistics
 from homeassistant.components.recorder.models import StatisticMeanType
 from homeassistant.components.recorder.statistics import (
     async_add_external_statistics,
@@ -532,6 +534,57 @@ async def test_rebuild_retries_after_a_failed_read(
     assert coordinator.statistics_status == "rebuilt"
     assert entry.data["statistics_version"] == 2
     assert len(await stored_rows(ha, STAT_CONSUMPTION)) == 92
+
+
+async def test_rebuild_retries_after_the_recorder_fails_the_clear(
+    ha: HomeAssistant,
+    mock_api: dict[str, AsyncMock],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A clear the recorder fails leaves the marker unset.
+
+    The recorder runs the clear only once. On a database error it logs the
+    error and moves on, and the imports queued behind the clear still run, on
+    top of the 1.4.x rows. The rebuild is recorded as done only if the clear
+    succeeded, so the next update rebuilds.
+    """
+    await add_legacy_statistics(ha)
+    entry = make_entry(statistics_version=None)
+    clears: list[list[str]] = []
+    clear_statistics = recorder_statistics.clear_statistics
+
+    def _locked_once(instance: Recorder, statistic_ids: list[str]) -> None:
+        clears.append(statistic_ids)
+        if len(clears) == 1:
+            raise OperationalError("DELETE", {}, Exception("database is locked"))
+        clear_statistics(instance, statistic_ids)
+
+    with patch.object(recorder_statistics, "clear_statistics", _locked_once):
+        await _setup(ha, entry)
+
+        assert len(clears) == 1
+        assert entry.state is ConfigEntryState.LOADED
+        coordinator = entry.runtime_data
+        assert "statistics_version" not in entry.data
+        assert coordinator.statistics_status == "rebuild_pending"
+        assert not coordinator.last_import.rebuilt
+        assert "The recorder did not clear the Watercare statistics" in caplog.text
+
+        await _refresh(ha, coordinator)
+
+    # The check before the rebuild let it run again, and this clear succeeded.
+    assert len(clears) == 2
+    assert coordinator.statistics_status == "rebuilt"
+    assert coordinator.last_import.rebuilt
+    assert entry.data["statistics_version"] == 2
+    for statistic_id in ALL_STATISTIC_IDS:
+        rows = await stored_rows(ha, statistic_id)
+        assert len(rows) == 92, statistic_id
+        assert datetime.fromtimestamp(rows[0]["start"], tz=UTC) == day_start(
+            date(2026, 6, 3)
+        )
+    consumption = await stored_rows(ha, STAT_CONSUMPTION)
+    assert consumption[-1]["sum"] == pytest.approx(33000)
 
 
 async def test_rebuild_retries_after_the_import_fails(

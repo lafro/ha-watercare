@@ -29,6 +29,7 @@ The 1.5.0 model (docs/statistics.md has the reasoning):
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
@@ -628,7 +629,7 @@ def async_rebuild(
     periods: Sequence[BillingPeriod],
     schedule: TariffSchedule,
     wastewater_ratio: Decimal,
-) -> ImportResult:
+) -> tuple[ImportResult, threading.Event]:
     """Replace the four statistics with the full history in the new format.
 
     The caller has checked that the API's history reaches back at least as
@@ -647,6 +648,14 @@ def async_rebuild(
     setup, and the recorder does not work through its queue until Home
     Assistant has started. The coordinator waits for the queue afterwards, in
     the background, before it records the rebuild as done.
+
+    Returns what was queued, and a flag the recorder thread sets once the
+    clear has succeeded (the clear's ``on_done``, which nothing waits on).
+    The recorder runs the clear only once: on a database error (a locked
+    SQLite database, a MariaDB lock-wait timeout) it logs the error and moves
+    on, and the imports queued behind the clear still run, on top of the old
+    rows. So the coordinator records the rebuild as done only if the flag is
+    set once it has waited for the queue.
     """
     plan = _plan(
         periods=periods,
@@ -661,11 +670,14 @@ def async_rebuild(
         len(periods),
         ", ".join(ALL_STATISTIC_IDS),
     )
-    get_instance(hass).async_clear_statistics(list(ALL_STATISTIC_IDS))
+    cleared = threading.Event()
+    get_instance(hass).async_clear_statistics(
+        list(ALL_STATISTIC_IDS), on_done=cleared.set
+    )
     result = _async_queue(hass, plan)
     _LOGGER.warning(
         "Watercare statistics rebuilt: %d consumption rows and %d cost rows queued",
         result.consumption_rows,
         result.cost_rows,
     )
-    return replace(result, rebuilt=True)
+    return replace(result, rebuilt=True), cleared

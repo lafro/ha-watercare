@@ -408,7 +408,9 @@ async def test_the_rebuild_is_recorded_as_done_only_once_the_recorder_has_it(
     queued = asyncio.Event()
     releases: list[threading.Event] = []
 
-    def _rebuild_behind_a_busy_recorder(*args: Any) -> ImportResult:
+    def _rebuild_behind_a_busy_recorder(
+        *args: Any,
+    ) -> tuple[ImportResult, threading.Event]:
         _, release = hold_recorder(ha)
         releases.append(release)
         result = async_rebuild(*args)
@@ -530,7 +532,9 @@ async def test_an_import_the_recorder_retries_or_drops_is_completed_later(
     planned: list[Any] = []
     import_statistics = recorder_statistics.import_statistics
 
-    def _rebuild_behind_a_busy_recorder(*args: Any) -> ImportResult:
+    def _rebuild_behind_a_busy_recorder(
+        *args: Any,
+    ) -> tuple[ImportResult, threading.Event]:
         # Queue the rebuild and the wait for it before the recorder runs any
         # of it, so the retry is queued behind the wait, as it is in practice.
         holds.append(hold_recorder(ha))

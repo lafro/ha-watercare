@@ -268,11 +268,12 @@ async def test_rebuild_replaces_legacy_rows(ha: HomeAssistant) -> None:
     await _add_legacy_rows(ha)
     assert len(await _rows(ha, STAT_CONSUMPTION)) == 2
 
-    result = async_rebuild(ha, [JUNE, JULY], PUBLISHED, RATIO)
+    result, cleared = async_rebuild(ha, [JUNE, JULY], PUBLISHED, RATIO)
 
     assert result.rebuilt
     assert result.consumption_rows == 62
     rows = await _rows(ha, STAT_CONSUMPTION)
+    assert cleared.is_set()
     assert len(rows) == 62
     assert rows[-1]["sum"] == pytest.approx(20000)
     total = await _rows(ha, STAT_TOTAL_COST)
@@ -308,7 +309,7 @@ async def test_rebuild_queues_the_clear_and_the_import_back_to_back(
         queue_task(self, task)
 
     with patch.object(Recorder, "queue_task", _record):
-        result = async_rebuild(ha, [JUNE, JULY], PUBLISHED, RATIO)
+        result, cleared = async_rebuild(ha, [JUNE, JULY], PUBLISHED, RATIO)
 
     assert result.rebuilt
     assert [type(task).__name__ for task in queued] == [
@@ -317,8 +318,9 @@ async def test_rebuild_queues_the_clear_and_the_import_back_to_back(
     ]
     clear = queued[0]
     assert sorted(clear.statistic_ids) == sorted(ALL_STATISTIC_IDS)
-    # Nothing waits for the recorder to confirm the clear.
-    assert clear.on_done is None
+    # The clear's on_done only sets the flag the coordinator checks after
+    # waiting for the queue; nothing waits for it.
+    assert clear.on_done == cleared.set
     assert [task.metadata["statistic_id"] for task in queued[1:]] == [
         STAT_CONSUMPTION,
         STAT_TOTAL_COST,

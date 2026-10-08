@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from decimal import Decimal
 from typing import TYPE_CHECKING
@@ -263,7 +263,7 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
             )
         else:
             # Queues the clear and the import together, without awaiting.
-            result = async_rebuild(
+            result, cleared = async_rebuild(
                 self.hass, periods, self.schedule, self.wastewater_ratio
             )
             # Queued is not written. At shutdown the recorder works through its
@@ -278,6 +278,21 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
             # after this leaves its statistic empty for now, and the next
             # update imports an empty statistic in full (docs/statistics.md).
             await async_wait_for_queue(self.hass)
+            if not cleared.is_set():
+                # The recorder runs the clear only once. On a database error
+                # (a locked SQLite database, a MariaDB lock-wait timeout) it
+                # logs the error and moves on, and the imports behind the
+                # clear still run, on top of the 1.4.x rows. The recorder
+                # takes one task at a time and the imports are queued behind
+                # the clear, so the flag is final by now. Leave the marker
+                # unset: the imported rows reach the same total as a rebuild,
+                # so the check above lets the next update rebuild.
+                _LOGGER.warning(
+                    "The recorder did not clear the Watercare statistics (its "
+                    "log has the error), so the rebuild is not recorded as "
+                    "done; the next poll rebuilds them"
+                )
+                return replace(result, rebuilt=False)
             self.statistics_status = "rebuilt"
 
         self.hass.config_entries.async_update_entry(

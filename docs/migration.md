@@ -39,7 +39,7 @@ The entities, their recorded history and the Energy dashboard configuration are 
 1. If the integration came from a different HACS repository, remove that custom repository in HACS first, then add `https://github.com/lafro/ha-watercare` and download the new version. Otherwise update as usual.
 2. Restart Home Assistant.
 3. The config entry migrates (1.1 to 1.2): flat 1.4.x prices that match a published year are dropped in favour of the published table; others are kept as the current year's prices. The log says which.
-4. The integration loads as soon as it has fetched the bills. Once Home Assistant has started, the log shows `Rebuilding the Watercare statistics in the 1.5.0 format …` and then `Watercare statistics rebuilt: …`. If the rebuild fails, the log says `Could not update the Watercare statistics`, the integration stays loaded and the next poll rebuilds again (the entry only records `statistics_version: 2` once the recorder has taken the clear and the import off its queue; [statistics.md](statistics.md#what-the-wait-before-a-read-guarantees) covers an import the recorder retries or drops after that).
+4. The integration loads as soon as it has fetched the bills. Once Home Assistant has started, the log shows `Rebuilding the Watercare statistics in the 1.5.0 format …` and then `Watercare statistics rebuilt: …`. If the rebuild fails, the log says `Could not update the Watercare statistics` (or `The recorder did not clear the Watercare statistics`), the integration stays loaded and the next poll rebuilds again (the entry only records `statistics_version: 2` once the recorder has taken the clear and the import off its queue, and only if the clear succeeded; [statistics.md](statistics.md#what-the-wait-before-a-read-guarantees) covers an import the recorder retries or drops after that).
 
 ## If a 1.5.0 upgrade got stuck
 
@@ -52,7 +52,7 @@ To fix it, reload Watercare (**⋮ → Reload**), or update to 1.5.1 and restart
 
 If the 1.5.0 rebuild finished (daily water bars, `statistics_version: 2`), there is nothing to do: 1.5.1 does not rebuild again.
 
-1.5.1 never touches the statistics during setup. It loads straight away and updates the statistics in the background once Home Assistant has started, and it queues the clear and the import together, so a cancelled setup or a reload cannot split them. It records the rebuild as done only once the database has taken both, so if a restart interrupts the rebuild anyway, the next start runs it again ([statistics.md](statistics.md#start-up-and-the-recorder)).
+1.5.1 never touches the statistics during setup. It loads straight away and updates the statistics in the background once Home Assistant has started, and it queues the clear and the import together, so a cancelled setup or a reload cannot split them. It records the rebuild as done only once the database has taken both, and only if it cleared the old statistics, so if a restart interrupts the rebuild anyway, the next start runs it again, and if the database fails the clear, the next poll does ([statistics.md](statistics.md#start-up-and-the-recorder)).
 
 ## Checking the result
 
