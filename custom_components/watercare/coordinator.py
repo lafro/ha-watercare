@@ -284,9 +284,12 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
                 # logs the error and moves on, and the imports behind the
                 # clear still run, on top of the 1.4.x rows. The recorder
                 # takes one task at a time and the imports are queued behind
-                # the clear, so the flag is final by now. Leave the marker
-                # unset: the imported rows reach the same total as a rebuild,
-                # so the check above lets the next update rebuild.
+                # the clear, so the flag is final by now, except in one
+                # start-up race that can only leave it unset early (a
+                # spurious warning; the next poll rebuilds to the same rows).
+                # Leave the marker unset: the imported rows reach the same
+                # total as a rebuild, so the check above lets the next
+                # update rebuild.
                 _LOGGER.warning(
                     "The recorder did not clear the Watercare statistics (its "
                     "log has the error), so the rebuild is not recorded as "
