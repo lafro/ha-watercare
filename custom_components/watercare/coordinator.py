@@ -41,6 +41,7 @@ from .statistics import (
     async_import,
     async_rebuild,
     async_rebuild_would_lose_history,
+    async_wait_for_queue,
     bill_cost,
     pricing_date,
 )
@@ -77,12 +78,13 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
     """Fetch Watercare bills twice a day and keep the statistics current.
 
     A poll only talks to Watercare. The statistics are updated afterwards in
-    a background task tied to the config entry, and only once Home Assistant
-    has started (``async_start_statistics``), so neither setup nor a poll
-    ever waits for the recorder. The recorder does not work through its queue
-    until Home Assistant has started, and Home Assistant does not finish
-    starting while a config entry is still setting up: waiting for it in
-    setup held start-up until bootstrap cancelled the setup (1.5.0).
+    a background task tied to the config entry, only once Home Assistant has
+    started (``async_start_statistics``) and never after the entry unloads
+    (``async_stop_statistics``), so neither setup nor a poll ever waits for
+    the recorder. The recorder does not work through its queue until Home
+    Assistant has started, and Home Assistant does not finish starting while
+    a config entry is still setting up: waiting for it in setup held start-up
+    until bootstrap cancelled the setup (1.5.0).
     """
 
     config_entry: WatercareConfigEntry
@@ -178,6 +180,17 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
         self._async_schedule_statistics()
 
     @callback
+    def async_stop_statistics(self) -> None:
+        """Start no more statistics updates: the entry is unloading.
+
+        Unloading cancels the running update, but a poll can still be in
+        flight (one started by ``homeassistant.update_entity``, say). When it
+        finishes, it must not start an update that nothing would cancel.
+        """
+        self._statistics_started = False
+        self._statistics_periods = None
+
+    @callback
     def _async_schedule_statistics(self) -> None:
         """Update the statistics in the background, one update at a time."""
         if not self._statistics_started:
@@ -194,7 +207,10 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
 
         Unloading the entry or stopping Home Assistant cancels this task. A
         cancellation can only take effect while it waits for the recorder or
-        reads from it, never between the rebuild's clear and import.
+        reads from it, never between the rebuild's clear and import. One that
+        lands after the rebuild is queued and before it is recorded as done
+        leaves the rebuild to run, and the next update rebuilds again, to the
+        same rows.
         """
         while (periods := self._statistics_periods) is not None:
             self._statistics_periods = None
@@ -246,14 +262,19 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
                 self.hass, periods, self.schedule, self.wastewater_ratio
             )
         else:
-            # From here to the marker nothing awaits: the clear, the import and
-            # the marker happen together or not at all.
+            # Queues the clear and the import together, without awaiting.
             result = async_rebuild(
                 self.hass, periods, self.schedule, self.wastewater_ratio
             )
+            # Queued is not written: at shutdown the recorder drops whatever is
+            # still in its queue (Recorder._async_close), though it finishes a
+            # task it has already taken off. Record the rebuild as done only
+            # once the recorder has taken all of it; otherwise a restart in
+            # between could keep the 1.4.x rows under a marker that says they
+            # were rebuilt.
+            await async_wait_for_queue(self.hass)
             self.statistics_status = "rebuilt"
 
-        # Recorded only once the import is queued.
         self.hass.config_entries.async_update_entry(
             entry, data={**entry.data, DATA_STATISTICS_VERSION: STATISTICS_VERSION}
         )

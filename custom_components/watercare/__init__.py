@@ -93,11 +93,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: WatercareConfigEntry) ->
 
     # The statistics (and the one-off rebuild) go through the recorder, which
     # only works through its queue once Home Assistant has started. Start them
-    # then, in the background, so setup never waits for the recorder.
+    # then, in the background, so setup never waits for the recorder, and stop
+    # them when the entry unloads.
     @callback
     def _async_start_statistics(_hass: HomeAssistant) -> None:
         coordinator.async_start_statistics()
 
+    entry.async_on_unload(coordinator.async_stop_statistics)
     entry.async_on_unload(async_at_started(hass, _async_start_statistics))
     return True
 

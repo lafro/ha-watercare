@@ -22,6 +22,7 @@ from pytest_homeassistant_custom_component.components.recorder.common import (
     async_wait_recording_done,
 )
 
+from custom_components.watercare import statistics
 from custom_components.watercare.const import (
     ALL_STATISTIC_IDS,
     STAT_CONSUMPTION,
@@ -357,6 +358,44 @@ async def test_an_import_reads_only_after_queued_writes(ha: HomeAssistant) -> No
     assert total[-1]["sum"] == pytest.approx(
         float(sum(cost.total for cost in costs if cost is not None))
     )
+
+
+@pytest.mark.parametrize("missed", ALL_STATISTIC_IDS)
+async def test_a_statistic_with_no_stored_rows_is_reimported_with_the_same_rows(
+    ha: HomeAssistant, missed: str
+) -> None:
+    """The rule that makes the gap in the read barrier harmless.
+
+    ``_async_read`` can go ahead while the recorder is still committing the
+    last write queued. Right after a rebuild, that is the import of a
+    statistic the rebuild has just cleared, so the next import reads it as
+    empty (the parameter says which). A statistic with no stored rows is
+    always imported in full, from zero, so the next import queues the
+    rebuild's rows for it again, and they replace themselves.
+    """
+    async_rebuild(ha, [JUNE, JULY], PUBLISHED, RATIO)
+    rebuilt = {sid: await _rows(ha, sid) for sid in ALL_STATISTIC_IDS}
+    read = statistics._last_stored_rows
+
+    def _read_before_the_last_write(
+        hass: HomeAssistant, statistic_ids: list[str]
+    ) -> dict[str, Any]:
+        stored = read(hass, statistic_ids)
+        stored[missed] = None
+        return stored
+
+    with patch.object(
+        statistics, "_last_stored_rows", side_effect=_read_before_the_last_write
+    ):
+        result = await async_import(ha, [JUNE, JULY], PUBLISHED, RATIO)
+
+    # Every day again for the statistic read as empty, nothing for the others.
+    if missed == STAT_CONSUMPTION:
+        assert (result.consumption_rows, result.cost_rows) == (62, 0)
+    else:
+        assert (result.consumption_rows, result.cost_rows) == (0, 62)
+    # The same rows: all four statistics are exactly as the rebuild left them.
+    assert {sid: await _rows(ha, sid) for sid in ALL_STATISTIC_IDS} == rebuilt
 
 
 async def test_rebuild_guard(ha: HomeAssistant) -> None:

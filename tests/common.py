@@ -219,6 +219,18 @@ class _HoldRecorder(RecorderTask):
         self.release.wait(HOLD_LIMIT)
 
 
+def hold_recorder(hass: HomeAssistant) -> tuple[asyncio.Event, threading.Event]:
+    """Queue a task that keeps the recorder busy until released.
+
+    Everything queued after it waits. Returns the event set once the recorder
+    thread is held, and the one that releases it; always set the second.
+    """
+    held = asyncio.Event()
+    release = threading.Event()
+    get_instance(hass).queue_task(_HoldRecorder(held, release))
+    return held, release
+
+
 @contextlib.asynccontextmanager
 async def recorder_held(hass: HomeAssistant) -> AsyncIterator[threading.Event]:
     """Stop the recorder working through its queue until released.
@@ -227,9 +239,7 @@ async def recorder_held(hass: HomeAssistant) -> AsyncIterator[threading.Event]:
     started, or while it is busy. Reads through its database executor still
     work, as they do during start-up.
     """
-    held = asyncio.Event()
-    release = threading.Event()
-    get_instance(hass).queue_task(_HoldRecorder(held, release))
+    held, release = hold_recorder(hass)
     await held.wait()
     try:
         yield release

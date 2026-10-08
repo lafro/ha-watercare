@@ -60,9 +60,10 @@ Statistics written by 1.4.x have one row per bill and are priced at one flat tar
 1. checks that a rebuild would not lose history: the stored consumption must not start before the oldest bill Watercare now returns, and its running total must not exceed what a rebuild reaches by the same day (which would mean a bill Watercare no longer returns; see below);
 2. works out the daily rows for the full history, from zero;
 3. queues a clear of the four statistics (`Recorder.async_clear_statistics`) and then the import of those rows (`async_add_external_statistics`, the recorder API for external statistics; `async_import_statistics` is the equivalent for entity statistics) on the recorder's queue;
-4. records the marker.
+4. waits until the recorder has taken them off its queue;
+5. records the marker.
 
-Steps 3 and 4 happen in one go in the event loop, without awaiting anything, so the recorder always runs the import straight after the clear, and no cancellation, timeout or shutdown can come between them. Nothing waits for the recorder to confirm either, and nothing runs SQL directly. The marker is recorded only once the import is queued: if a read fails, or the import is refused, the update logs `Could not update the Watercare statistics`, the marker stays unset and the next poll checks and rebuilds again. A partly imported history never holds more than the bills Watercare returns, so that check lets the rebuild run. `tests/test_init.py` covers both failures and the full upgrade from a 1.4.x entry. The log shows a warning before and after the rebuild. It only touches the four `watercare:*` statistics and only runs after Watercare has returned at least one valid bill.
+Step 3 happens in one go in the event loop, without awaiting anything, so the recorder always runs the import straight after the clear, and no cancellation, timeout or shutdown can come between them. Nothing runs SQL directly. Step 4 is there because queued is not written: at shutdown the recorder drops whatever is still in its queue (`Recorder._async_close`), though it finishes the task it is running. Recording the marker before then could leave the 1.4.x rows in place under a marker that says they were rebuilt. If a read fails or the import is refused, the update logs `Could not update the Watercare statistics`. If the update is cancelled during step 4 (an unload or a shutdown), the queued clear and import are left to the recorder. In every case the marker stays unset and the next update checks and rebuilds again. A partly imported history never holds more than the bills Watercare returns, so that check lets the rebuild run. `tests/test_init.py` covers both failures and the full upgrade from a 1.4.x entry. The log shows a warning before and after the rebuild. It only touches the four `watercare:*` statistics and only runs after Watercare has returned at least one valid bill.
 
 A new config entry also has no marker, so its first statistics update clears and re-imports these statistics too. That is harmless: the result is the same rows.
 
@@ -74,12 +75,26 @@ Home Assistant's recorder writes statistics from a queue on its own thread, and 
 
 From 1.5.1:
 
-- A poll only fetches the bills and the account. The statistics update, the one-off rebuild included, runs afterwards as a background task of the config entry, and only once Home Assistant has started (`async_at_started`). Setup never waits for it, and unloading the entry or stopping Home Assistant cancels it.
+- A poll only fetches the bills and the account. The statistics update, the one-off rebuild included, runs afterwards as a background task of the config entry, and only once Home Assistant has started (`async_at_started`). Setup never waits for it, and unloading the entry or stopping Home Assistant cancels it. A poll still fetching bills when the entry unloads starts no update when it finishes.
 - One update runs at a time. A poll that finishes while an update is still running leaves its bills for that update to take next.
-- Before reading the stored statistics, an update waits for the recorder to commit what is already queued (the recorder's `async_block_till_done`, as Home Assistant's history and logbook do before their reads). Reads go straight to the database, so otherwise a poll that follows a rebuild while the recorder is busy could read the 1.4.x rows and continue their sums.
-- The rebuild queues the clear and the import back to back (above), so a cancellation can only arrive before the clear or after the marker.
+- Before every read of the stored statistics, an update waits for the recorder's queue (below).
+- The rebuild queues the clear and the import back to back (above), so a cancellation can only arrive before the clear or after both are queued. One that arrives before the marker leaves the rebuild to run, and the next update rebuilds again, to the same rows.
 
-`tests/test_startup.py` holds the recorder's thread, as start-up does, and checks that setup finishes at once and the statistics are rebuilt afterwards, including when the task is cancelled the moment the clear is queued; those tests fail on 1.5.0.
+`tests/test_startup.py` holds the recorder's thread, as start-up does, and checks that setup finishes at once and the statistics are rebuilt afterwards, including when the task is cancelled the moment the clear is queued (the first five tests there fail on 1.5.0). It also checks that no update runs before Home Assistant has started or after the entry unloads, and that the marker waits for the recorder.
+
+#### What the wait before a read guarantees
+
+Reads go straight to the database, past the recorder's queue. Without a wait, a poll that follows a rebuild while the recorder is busy could read the 1.4.x rows and continue their sums. So before every read an update awaits the recorder's `async_block_till_done`, as Home Assistant's history and logbook do before theirs. Exactly what that guarantees:
+
+- If anything is queued, it queues a task of its own behind it and returns once the recorder thread reaches that task, so every write that was waiting in the queue has run.
+- If the queue is empty, it returns at once, even while the recorder thread is still running the last task it took off the queue.
+
+So a read never misses a write that was still waiting in the queue, but it can miss one: the last one queued, while the recorder is still committing it. That is harmless because of one rule: **a statistic with no stored rows is always imported in full, from zero.**
+
+- After a rebuild, the write a read can miss is the import of a statistic the rebuild has just cleared. The read finds that statistic empty, so from the same bills the next import queues the same rows for it again, and the recorder, which keeps one row per statistic and hour, replaces the identical rows with them.
+- After a normal import, the write a read can miss continues its statistic from that statistic's newest stored row, which the read still sees, so the next import plans the same days again from the same row.
+
+`test_a_statistic_with_no_stored_rows_is_reimported_with_the_same_rows` in `tests/test_statistics_recorder.py` pins the rule. The same wait comes before the marker (step 4 above), where it means the recorder has taken the whole rebuild off its queue.
 
 ### When the rebuild is skipped
 

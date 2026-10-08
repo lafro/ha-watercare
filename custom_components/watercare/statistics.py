@@ -17,12 +17,13 @@ The 1.5.0 model (docs/statistics.md has the reasoning):
 * **One-off rebuild.** Entries upgraded from 1.4.x hold one row per bill,
   priced at a single flat tariff. ``async_rebuild`` clears the four
   statistics and imports the full history in the new format, once.
-* **Never wait for the recorder's queue.** Writes are queued on the recorder
-  and never awaited. Reads first wait for the recorder to commit what is
-  already queued, so they never see rows from before an earlier write. The
-  recorder only works through its queue once Home Assistant has started, so
-  the coordinator runs all of this in the background after start-up, never
-  in setup (docs/statistics.md has the 1.5.0 defect this avoids).
+* **Never wait for the recorder in setup.** Writes are queued on the
+  recorder. Reads first wait for the queue (``async_wait_for_queue``), which
+  covers every write still waiting in it but not one the recorder is already
+  running; ``_async_read`` explains why that gap is harmless. The recorder
+  only works through its queue once Home Assistant has started, so the
+  coordinator runs all of this in the background after start-up, never in
+  setup (docs/statistics.md has the 1.5.0 defect this avoids).
 """
 
 from __future__ import annotations
@@ -397,19 +398,44 @@ def _last_stored_rows(
     return stored
 
 
+async def async_wait_for_queue(hass: HomeAssistant) -> None:
+    """Wait until the recorder has taken every queued task off its queue.
+
+    This is ``Recorder.async_block_till_done``, which Home Assistant's history
+    and logbook await before they read. If anything is queued, it queues a
+    task of its own behind it and returns when the recorder thread reaches
+    that task: every task that was waiting has then run. If the queue is
+    empty, it returns at once, even while the recorder thread is still
+    running the last task it took off the queue, so that task may not be
+    committed yet.
+    """
+    await get_instance(hass).async_block_till_done()
+
+
 async def _async_read[T](
     hass: HomeAssistant, target: Callable[..., T], *args: object
 ) -> T:
-    """Read from the database once the recorder has committed its queue.
+    """Read from the database after waiting for the recorder's queue.
 
-    Reads go straight to the database, past the recorder's queue. Waiting for
-    what is already queued first (as Home Assistant's history and logbook do)
-    means a read never misses rows, or a clear, queued by an earlier update,
-    so new rows are never anchored to stale ones.
+    Reads go straight to the database, past the recorder's queue, so without
+    the wait a read could miss rows, or a clear, queued by an earlier update
+    and anchor new rows to stale ones (the 1.4.x rows, right after a rebuild).
+
+    The read can still miss one write despite the wait
+    (``async_wait_for_queue``): the last one queued, while the recorder is
+    committing it. After a rebuild, that is the import of a statistic the
+    rebuild has just cleared, so the read finds the statistic empty. That is
+    harmless because a statistic with no stored rows is always imported in
+    full, from zero (``_plan``): from the same bills, the import queues the
+    same rows again, and the recorder keeps one row per statistic and hour,
+    so they replace the identical rows the missed write stored. After a
+    normal import, the missed write continues its statistic from that
+    statistic's newest stored row, which the read still sees, so the next
+    import plans the same days again from the same row and its rows replace
+    the missed ones. ``tests/test_statistics_recorder.py`` pins the rule.
     """
-    instance = get_instance(hass)
-    await instance.async_block_till_done()
-    return await instance.async_add_executor_job(target, *args)
+    await async_wait_for_queue(hass)
+    return await get_instance(hass).async_add_executor_job(target, *args)
 
 
 async def _async_last_stored(hass: HomeAssistant) -> dict[str, _Stored | None]:
@@ -612,9 +638,11 @@ def async_rebuild(
     (``Recorder.async_clear_statistics``) and the imports are queued on the
     recorder back to back, in this one call, which never yields to the event
     loop: the recorder runs them in that order, and no cancellation, timeout
-    or shutdown can fall between them. Nothing waits for the recorder; 1.5.0
-    waited for the clear inside setup, and the recorder does not work through
-    its queue until Home Assistant has started.
+    or shutdown can fall between them. Nothing here waits for the recorder;
+    1.5.0 waited for the clear inside setup, and the recorder does not work
+    through its queue until Home Assistant has started. The coordinator
+    waits for the queue afterwards, in the background, before it records the
+    rebuild as done.
     """
     plan = _plan(
         periods=periods,
