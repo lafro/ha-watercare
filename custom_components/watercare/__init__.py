@@ -12,6 +12,7 @@ from homeassistant.exceptions import ConfigEntryError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.start import async_at_started
 from homeassistant.util import dt as dt_util
 
 from .api import WatercareApi
@@ -89,6 +90,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: WatercareConfigEntry) ->
 
     entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    # The statistics (and the one-off rebuild) go through the recorder, which
+    # only works through its queue once Home Assistant has started. Start them
+    # then, in the background, so setup never waits for the recorder, and stop
+    # them when the entry unloads.
+    @callback
+    def _async_start_statistics(_hass: HomeAssistant) -> None:
+        coordinator.async_start_statistics()
+
+    entry.async_on_unload(coordinator.async_stop_statistics)
+    entry.async_on_unload(async_at_started(hass, _async_start_statistics))
     return True
 
 

@@ -17,12 +17,19 @@ The 1.5.0 model (docs/statistics.md has the reasoning):
 * **One-off rebuild.** Entries upgraded from 1.4.x hold one row per bill,
   priced at a single flat tariff. ``async_rebuild`` clears the four
   statistics and imports the full history in the new format, once.
+* **Never wait for the recorder in setup.** Writes are queued on the
+  recorder. Reads first wait for the queue (``async_wait_for_queue``), which
+  covers every write still waiting in it but not one the recorder is already
+  running; ``_async_read`` explains why that gap is harmless. The recorder
+  only works through its queue once Home Assistant has started, so the
+  coordinator runs all of this in the background after start-up, never in
+  setup (docs/statistics.md has the 1.5.0 defect this avoids).
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
+import threading
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
@@ -42,7 +49,7 @@ from homeassistant.components.recorder.statistics import (
     statistics_during_period,
 )
 from homeassistant.const import UnitOfVolume
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.util.unit_conversion import VolumeConverter
 
 from .const import (
@@ -68,7 +75,6 @@ _LOGGER = logging.getLogger(__name__)
 _LITRES_PER_KILOLITRE: Final = Decimal(1000)
 _ONE_DAY: Final = timedelta(days=1)
 _PRECISION: Final = Decimal("0.000000001")
-_CLEAR_TIMEOUT: Final = 300.0
 # Litres. Stored sums are floats; anything above this is a real difference.
 _VOLUME_TOLERANCE: Final = Decimal("0.5")
 
@@ -393,10 +399,48 @@ def _last_stored_rows(
     return stored
 
 
+async def async_wait_for_queue(hass: HomeAssistant) -> None:
+    """Wait until the recorder has taken every queued task off its queue.
+
+    This is ``Recorder.async_block_till_done``, which Home Assistant's history
+    and logbook await before they read. If anything is queued, it queues a
+    task of its own behind it and returns when the recorder thread reaches
+    that task: every task that was waiting has then run. If the queue is
+    empty, it returns at once, even while the recorder thread is still
+    running the last task it took off the queue, so that task may not be
+    committed yet.
+    """
+    await get_instance(hass).async_block_till_done()
+
+
+async def _async_read[T](
+    hass: HomeAssistant, target: Callable[..., T], *args: object
+) -> T:
+    """Read from the database after waiting for the recorder's queue.
+
+    Reads go straight to the database, past the recorder's queue, so without
+    the wait a read could miss rows, or a clear, queued by an earlier update
+    and anchor new rows to stale ones (the 1.4.x rows, right after a rebuild).
+
+    The read can still miss one write despite the wait
+    (``async_wait_for_queue``): the last one queued, while the recorder is
+    committing it. After a rebuild, that is the import of a statistic the
+    rebuild has just cleared, so the read finds the statistic empty. That is
+    harmless because a statistic with no stored rows is always imported in
+    full, from zero (``_plan``): from the same bills, the import queues the
+    same rows again, and the recorder keeps one row per statistic and hour,
+    so they replace the identical rows the missed write stored. After a
+    normal import, the missed write continues its statistic from that
+    statistic's newest stored row, which the read still sees, so the next
+    import plans the same days again from the same row and its rows replace
+    the missed ones. ``tests/test_statistics_recorder.py`` pins the rule.
+    """
+    await async_wait_for_queue(hass)
+    return await get_instance(hass).async_add_executor_job(target, *args)
+
+
 async def _async_last_stored(hass: HomeAssistant) -> dict[str, _Stored | None]:
-    return await get_instance(hass).async_add_executor_job(
-        _last_stored_rows, hass, ALL_STATISTIC_IDS
-    )
+    return await _async_read(hass, _last_stored_rows, hass, ALL_STATISTIC_IDS)
 
 
 async def async_import(
@@ -405,7 +449,11 @@ async def async_import(
     schedule: TariffSchedule,
     wastewater_ratio: Decimal,
 ) -> ImportResult:
-    """Add rows for days after the stored history (normal poll)."""
+    """Add rows for days after the stored history (normal poll).
+
+    Nothing is awaited between reading the stored history and queuing the new
+    rows, and nothing waits for the recorder to write them.
+    """
     stored = await _async_last_stored(hass)
     consumption = stored[STAT_CONSUMPTION]
     after = (
@@ -413,26 +461,37 @@ async def async_import(
         if consumption is not None
         else None
     )
-    return _write(
+    return _async_queue(
         hass,
-        periods=periods,
-        schedule=schedule,
-        wastewater_ratio=wastewater_ratio,
-        stored=stored,
-        after=after,
+        _plan(
+            periods=periods,
+            schedule=schedule,
+            wastewater_ratio=wastewater_ratio,
+            stored=stored,
+            after=after,
+        ),
     )
 
 
-def _write(
-    hass: HomeAssistant,
+@dataclass(frozen=True, slots=True)
+class _Plan:
+    """The rows to add to each statistic, and what they amount to."""
+
+    writes: tuple[tuple[StatisticMetaData, list[StatisticData]], ...]
+    result: ImportResult
+
+
+def _plan(
     *,
     periods: Sequence[BillingPeriod],
     schedule: TariffSchedule,
     wastewater_ratio: Decimal,
     stored: dict[str, _Stored | None],
     after: date | None,
-) -> ImportResult:
+) -> _Plan:
+    """Work out the rows to add after the stored ones (no I/O)."""
     days = daily_usage(periods, after=after)
+    writes: list[tuple[StatisticMetaData, list[StatisticData]]] = []
 
     consumption_rows = _rows(
         days,
@@ -440,7 +499,7 @@ def _write(
         lambda usage: usage.litres,
     )
     if consumption_rows:
-        async_add_external_statistics(hass, _consumption_metadata(), consumption_rows)
+        writes.append((_consumption_metadata(), consumption_rows))
 
     cost_rows = 0
     first_missing: tuple[date, int] | None = None
@@ -451,9 +510,7 @@ def _write(
         if missing is not None and (first_missing is None or missing < first_missing):
             first_missing = missing
         if rows:
-            async_add_external_statistics(
-                hass, _cost_metadata(statistic_id, name), rows
-            )
+            writes.append((_cost_metadata(statistic_id, name), rows))
             cost_rows += len(rows)
 
     if first_missing is not None:
@@ -463,12 +520,23 @@ def _write(
             first_missing[0].isoformat(),
             financial_year_label(first_missing[1]),
         )
-    return ImportResult(
-        consumption_rows=len(consumption_rows),
-        cost_rows=cost_rows,
-        first_day_without_tariff=first_missing[0] if first_missing else None,
-        missing_tariff_year=first_missing[1] if first_missing else None,
+    return _Plan(
+        writes=tuple(writes),
+        result=ImportResult(
+            consumption_rows=len(consumption_rows),
+            cost_rows=cost_rows,
+            first_day_without_tariff=first_missing[0] if first_missing else None,
+            missing_tariff_year=first_missing[1] if first_missing else None,
+        ),
     )
+
+
+@callback
+def _async_queue(hass: HomeAssistant, plan: _Plan) -> ImportResult:
+    """Queue the planned rows on the recorder, in order, without waiting."""
+    for metadata, rows in plan.writes:
+        async_add_external_statistics(hass, metadata, rows)
+    return plan.result
 
 
 def _rows(
@@ -528,7 +596,8 @@ async def async_rebuild_would_lose_history(
     hold for the 1.4.x layout (one row per bill end) and for daily rows.
     """
     first_day = min(period.start for period in periods)
-    earlier = await get_instance(hass).async_add_executor_job(
+    earlier = await _async_read(
+        hass,
         statistics_during_period,
         hass,
         datetime(1970, 1, 1, tzinfo=UTC),
@@ -554,54 +623,61 @@ async def async_rebuild_would_lose_history(
     return stored.total > rebuilt + _VOLUME_TOLERANCE
 
 
-async def async_clear(hass: HomeAssistant) -> None:
-    """Clear the integration's four statistics and wait until it is done.
-
-    Runs through the recorder's own queue (``Recorder.async_clear_statistics``),
-    never from an executor thread, and waits for the recorder to confirm.
-    """
-    loop = asyncio.get_running_loop()
-    done = asyncio.Event()
-
-    def _on_done() -> None:
-        # Called from the recorder thread.
-        loop.call_soon_threadsafe(done.set)
-
-    get_instance(hass).async_clear_statistics(list(ALL_STATISTIC_IDS), on_done=_on_done)
-    async with asyncio.timeout(_CLEAR_TIMEOUT):
-        await done.wait()
-
-
-async def async_rebuild(
+@callback
+def async_rebuild(
     hass: HomeAssistant,
     periods: Sequence[BillingPeriod],
     schedule: TariffSchedule,
     wastewater_ratio: Decimal,
-) -> ImportResult:
+) -> tuple[ImportResult, threading.Event]:
     """Replace the four statistics with the full history in the new format.
 
     The caller has checked that the API's history reaches back at least as
     far as the stored history, so nothing is lost.
+
+    The rows are worked out first. Then the clear
+    (``Recorder.async_clear_statistics``) and the imports are queued on the
+    recorder back to back, in this one call, which never yields to the event
+    loop: the imports are queued straight behind the clear, and no
+    cancellation can fall between them. A shutdown can: if its final-write
+    stage times out while the recorder runs the clear,
+    ``Recorder._async_close`` drops the imports still queued. The marker is
+    unset then, so the next start rebuilds.
+
+    Nothing here waits for the recorder; 1.5.0 waited for the clear inside
+    setup, and the recorder does not work through its queue until Home
+    Assistant has started. The coordinator waits for the queue afterwards, in
+    the background, before it records the rebuild as done.
+
+    Returns what was queued, and a flag the recorder thread sets once the
+    clear has succeeded (the clear's ``on_done``, which nothing waits on).
+    The recorder runs the clear only once: on a database error (a locked
+    SQLite database, a MariaDB lock-wait timeout) it logs the error and moves
+    on, and the imports queued behind the clear still run, on top of the old
+    rows. So the coordinator records the rebuild as done only if the flag is
+    set once it has waited for the queue.
     """
+    plan = _plan(
+        periods=periods,
+        schedule=schedule,
+        wastewater_ratio=wastewater_ratio,
+        stored=dict.fromkeys(ALL_STATISTIC_IDS),
+        after=None,
+    )
     _LOGGER.warning(
         "Rebuilding the Watercare statistics in the 1.5.0 format from %d "
         "billing periods: clearing %s, then importing daily rows",
         len(periods),
         ", ".join(ALL_STATISTIC_IDS),
     )
-    await async_clear(hass)
-    stored: dict[str, _Stored | None] = dict.fromkeys(ALL_STATISTIC_IDS)
-    result = _write(
-        hass,
-        periods=periods,
-        schedule=schedule,
-        wastewater_ratio=wastewater_ratio,
-        stored=stored,
-        after=None,
+    cleared = threading.Event()
+    get_instance(hass).async_clear_statistics(
+        list(ALL_STATISTIC_IDS), on_done=cleared.set
     )
+    result = _async_queue(hass, plan)
     _LOGGER.warning(
         "Watercare statistics rebuilt: %d consumption rows and %d cost rows queued",
         result.consumption_rows,
         result.cost_rows,
     )
-    return replace(result, rebuilt=True)
+    return replace(result, rebuilt=True), cleared

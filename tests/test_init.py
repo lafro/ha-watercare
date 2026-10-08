@@ -9,11 +9,11 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from freezegun.api import FrozenDateTimeFactory
-from homeassistant.components.recorder import Recorder, get_instance
+from homeassistant.components.recorder import Recorder
+from homeassistant.components.recorder import statistics as recorder_statistics
 from homeassistant.components.recorder.models import StatisticMeanType
 from homeassistant.components.recorder.statistics import (
     async_add_external_statistics,
-    statistics_during_period,
 )
 from homeassistant.config_entries import SOURCE_REAUTH, ConfigEntryState
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
@@ -24,6 +24,7 @@ from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.components.recorder.common import (
     async_wait_recording_done,
 )
+from sqlalchemy.exc import OperationalError
 
 from custom_components.watercare import async_migrate_entry
 from custom_components.watercare.api import (
@@ -47,16 +48,30 @@ from .common import (
     ACCOUNT_NUMBER,
     EMAIL,
     PASSWORD,
+    add_legacy_statistics,
     api_period,
     default_periods,
     make_entry,
+    stored_rows,
 )
 
 
 async def _setup(hass: HomeAssistant, entry: Any) -> None:
     entry.add_to_hass(hass)
     await hass.config_entries.async_setup(entry.entry_id)
-    await hass.async_block_till_done()
+    # The statistics update runs in the background after setup.
+    await hass.async_block_till_done(wait_background_tasks=True)
+
+
+async def _refresh(hass: HomeAssistant, coordinator: Any) -> None:
+    """Poll, then let the statistics update that follows finish."""
+    await coordinator.async_refresh()
+    await hass.async_block_till_done(wait_background_tasks=True)
+
+
+async def _reload(hass: HomeAssistant, entry: Any) -> None:
+    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done(wait_background_tasks=True)
 
 
 async def test_setup_and_unload(
@@ -128,7 +143,7 @@ async def test_entity_registry_migrations(
     )
 
     await ha.config_entries.async_setup(entry.entry_id)
-    await ha.async_block_till_done()
+    await ha.async_block_till_done(wait_background_tasks=True)
 
     migrated = registry.async_get(legacy.entity_id)
     assert migrated is not None
@@ -216,14 +231,14 @@ async def test_first_run_rebuilds_legacy_statistics(
 
     coordinator = entry.runtime_data
     assert coordinator.statistics_status == "rebuilt"
-    assert coordinator.data.import_result.rebuilt
-    assert coordinator.data.import_result.consumption_rows == 92
+    assert coordinator.last_import.rebuilt
+    assert coordinator.last_import.consumption_rows == 92
     assert entry.data["statistics_version"] == 2
 
     # Later polls only add new days.
-    await coordinator.async_refresh()
-    assert coordinator.data.import_result.consumption_rows == 0
-    assert not coordinator.data.import_result.rebuilt
+    await _refresh(ha, coordinator)
+    assert coordinator.last_import.consumption_rows == 0
+    assert not coordinator.last_import.rebuilt
 
 
 async def test_rebuild_is_skipped_when_it_would_lose_history(
@@ -241,7 +256,7 @@ async def test_rebuild_is_skipped_when_it_would_lose_history(
     )
     assert issue is not None
     # Only the bill after the stored history was added.
-    assert coordinator.data.import_result.consumption_rows == 30
+    assert coordinator.last_import.consumption_rows == 30
 
 
 async def test_tariff_issue_is_raised_and_cleared(
@@ -264,10 +279,10 @@ async def test_tariff_issue_is_raised_and_cleared(
     assert issue.is_fixable
     assert issue.translation_placeholders == {"financial_year": "2027/28"}
     assert issue.data == {"entry_id": entry.entry_id, "financial_year": 2027}
-    assert coordinator.data.missing_tariff_year == 2027
+    assert coordinator.missing_tariff_year == 2027
     assert coordinator.data.latest_cost is None
-    assert coordinator.data.import_result.first_day_without_tariff == date(2027, 7, 4)
-    assert coordinator.data.import_result.missing_tariff_year == 2027
+    assert coordinator.last_import.first_day_without_tariff == date(2027, 7, 4)
+    assert coordinator.last_import.missing_tariff_year == 2027
     assert ha.states.get("sensor.watercare_last_bill_cost").state == "unknown"
 
     ha.config_entries.async_update_entry(
@@ -279,8 +294,7 @@ async def test_tariff_issue_is_raised_and_cleared(
             },
         },
     )
-    await ha.config_entries.async_reload(entry.entry_id)
-    await ha.async_block_till_done()
+    await _reload(ha, entry)
 
     assert ir.async_get(ha).async_get_issue(DOMAIN, issue_id) is None
     assert entry.runtime_data.data.latest_cost is not None
@@ -383,7 +397,7 @@ async def test_tariff_issue_names_the_earliest_unpriced_year(
     issue = ir.async_get(ha).async_get_issue(DOMAIN, f"tariff_missing_{entry.entry_id}")
     assert issue is not None
     assert issue.translation_placeholders == {"financial_year": "2027/28"}
-    assert entry.runtime_data.data.missing_tariff_year == 2027
+    assert entry.runtime_data.missing_tariff_year == 2027
 
 
 async def test_removing_the_entry_removes_its_issues(
@@ -418,79 +432,13 @@ async def test_bill_spanning_1_july_keeps_its_cost_while_the_new_year_is_unknown
     await _setup(ha, entry)
 
     data = entry.runtime_data.data
-    assert data.import_result.first_day_without_tariff is None
+    assert entry.runtime_data.last_import.first_day_without_tariff is None
     assert data.latest_cost is not None
     assert data.latest_tariff == PUBLISHED_TARIFFS[2026]
-    assert data.missing_tariff_year == 2027
+    assert entry.runtime_data.missing_tariff_year == 2027
     usage = ha.states.get("sensor.watercare_last_bill_usage")
     assert usage is not None
     assert usage.attributes["tariff_year"] == "2026/27"
-
-
-def _legacy_metadata(statistic_id: str, name: str, unit: str) -> Any:
-    return {
-        "has_sum": True,
-        "mean_type": StatisticMeanType.NONE,
-        "name": name,
-        "source": DOMAIN,
-        "statistic_id": statistic_id,
-        "unit_class": "volume" if unit == "L" else None,
-        "unit_of_measurement": unit,
-    }
-
-
-async def _add_legacy_statistics(hass: HomeAssistant) -> None:
-    """Store all four statistics the way 1.4.x did for the default bills.
-
-    One row per bill, at the Auckland midnight that starts its end date, every
-    bill priced at the one flat tariff from the 1.4.x options (2025/26).
-    """
-    flat = PUBLISHED_TARIFFS[2025]
-    ratio = Decimal("0.785")
-    bills = [(date(2026, 7, 3), 12, 31), (date(2026, 8, 3), 8, 31)]
-    bills.append((date(2026, 9, 2), 13, 30))
-    sums: dict[str, Decimal] = dict.fromkeys(ALL_STATISTIC_IDS, Decimal(0))
-    rows: dict[str, list[Any]] = {statistic_id: [] for statistic_id in sums}
-    for end, kilolitres, days in bills:
-        water = kilolitres * flat.water_rate
-        wastewater = kilolitres * ratio * flat.wastewater_rate
-        fixed = flat.fixed_charge / 365 * days
-        for statistic_id, amount in (
-            (STAT_CONSUMPTION, Decimal(kilolitres * 1000)),
-            (STAT_TOTAL_COST, water + wastewater + fixed),
-            (STAT_CONSUMPTION_COST, water),
-            (STAT_WASTEWATER_COST, wastewater),
-        ):
-            sums[statistic_id] += amount
-            rows[statistic_id].append(
-                {"start": day_start(end), "sum": float(sums[statistic_id])}
-            )
-    names = {
-        STAT_CONSUMPTION: ("Watercare Water Consumption", "L"),
-        STAT_TOTAL_COST: ("Watercare Total Cost", "NZD"),
-        STAT_CONSUMPTION_COST: ("Watercare Consumption Cost", "NZD"),
-        STAT_WASTEWATER_COST: ("Watercare Wastewater Cost", "NZD"),
-    }
-    for statistic_id, (name, unit) in names.items():
-        async_add_external_statistics(
-            hass, _legacy_metadata(statistic_id, name, unit), rows[statistic_id]
-        )
-    await async_wait_recording_done(hass)
-
-
-async def _stored(hass: HomeAssistant, statistic_id: str) -> list[dict[str, Any]]:
-    await async_wait_recording_done(hass)
-    result = await get_instance(hass).async_add_executor_job(
-        statistics_during_period,
-        hass,
-        datetime(2000, 1, 1, tzinfo=UTC),
-        None,
-        {statistic_id},
-        "hour",
-        None,
-        {"state", "sum"},
-    )
-    return list(result.get(statistic_id, []))
 
 
 def _legacy_entry() -> Any:
@@ -513,8 +461,8 @@ def _legacy_entry() -> Any:
 async def test_upgrade_from_1_4_x_end_to_end(
     ha: HomeAssistant, mock_api: dict[str, AsyncMock]
 ) -> None:
-    await _add_legacy_statistics(ha)
-    assert len(await _stored(ha, STAT_TOTAL_COST)) == 3
+    await add_legacy_statistics(ha)
+    assert len(await stored_rows(ha, STAT_TOTAL_COST)) == 3
     entry = _legacy_entry()
 
     await _setup(ha, entry)
@@ -542,7 +490,7 @@ async def test_upgrade_from_1_4_x_end_to_end(
         STAT_WASTEWATER_COST: float(sum(cost.wastewater for cost in costs if cost)),
     }
     for statistic_id, final_sum in expected.items():
-        rows = await _stored(ha, statistic_id)
+        rows = await stored_rows(ha, statistic_id)
         assert len(rows) == 92, statistic_id
         assert datetime.fromtimestamp(rows[0]["start"], tz=UTC) == day_start(
             date(2026, 6, 3)
@@ -555,42 +503,94 @@ async def test_upgrade_from_1_4_x_end_to_end(
     assert expected[STAT_TOTAL_COST] == pytest.approx(93.3727 + 76.7855 + 104.9095)
 
     # The next poll adds nothing and keeps the rebuilt rows.
-    await coordinator.async_refresh()
-    assert coordinator.data.import_result.consumption_rows == 0
-    assert len(await _stored(ha, STAT_TOTAL_COST)) == 92
+    await _refresh(ha, coordinator)
+    assert coordinator.last_import.consumption_rows == 0
+    assert len(await stored_rows(ha, STAT_TOTAL_COST)) == 92
 
 
-async def test_rebuild_retries_after_the_clear_times_out(
+async def test_rebuild_retries_after_a_failed_read(
     ha: HomeAssistant, mock_api: dict[str, AsyncMock]
 ) -> None:
-    await _add_legacy_statistics(ha)
+    await add_legacy_statistics(ha)
     entry = make_entry(statistics_version=None)
 
-    # The recorder never confirms the clear.
-    with (
-        patch.object(Recorder, "async_clear_statistics"),
-        patch("custom_components.watercare.statistics._CLEAR_TIMEOUT", 0.01),
+    # The database cannot be read when the rebuild checks the stored history.
+    with patch(
+        "custom_components.watercare.statistics.statistics_during_period",
+        side_effect=OperationalError("SELECT", {}, Exception("database is locked")),
     ):
         await _setup(ha, entry)
 
-    assert entry.state is ConfigEntryState.SETUP_RETRY
-    assert "statistics_version" not in entry.data
-    # Nothing was imported: the legacy rows are still there.
-    assert len(await _stored(ha, STAT_CONSUMPTION)) == 3
-
-    await ha.config_entries.async_reload(entry.entry_id)
-    await ha.async_block_till_done()
-
+    # The sensors work; the statistics wait for the next poll.
     assert entry.state is ConfigEntryState.LOADED
-    assert entry.runtime_data.statistics_status == "rebuilt"
+    coordinator = entry.runtime_data
+    assert coordinator.statistics_status == "rebuild_pending"
+    assert "statistics_version" not in entry.data
+    # Nothing was cleared: the legacy rows are still there.
+    assert len(await stored_rows(ha, STAT_CONSUMPTION)) == 3
+
+    await _refresh(ha, coordinator)
+
+    assert coordinator.statistics_status == "rebuilt"
     assert entry.data["statistics_version"] == 2
-    assert len(await _stored(ha, STAT_CONSUMPTION)) == 92
+    assert len(await stored_rows(ha, STAT_CONSUMPTION)) == 92
+
+
+async def test_rebuild_retries_after_the_recorder_fails_the_clear(
+    ha: HomeAssistant,
+    mock_api: dict[str, AsyncMock],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A clear the recorder fails leaves the marker unset.
+
+    The recorder runs the clear only once. On a database error it logs the
+    error and moves on, and the imports queued behind the clear still run, on
+    top of the 1.4.x rows. The rebuild is recorded as done only if the clear
+    succeeded, so the next update rebuilds.
+    """
+    await add_legacy_statistics(ha)
+    entry = make_entry(statistics_version=None)
+    clears: list[list[str]] = []
+    clear_statistics = recorder_statistics.clear_statistics
+
+    def _locked_once(instance: Recorder, statistic_ids: list[str]) -> None:
+        clears.append(statistic_ids)
+        if len(clears) == 1:
+            raise OperationalError("DELETE", {}, Exception("database is locked"))
+        clear_statistics(instance, statistic_ids)
+
+    with patch.object(recorder_statistics, "clear_statistics", _locked_once):
+        await _setup(ha, entry)
+
+        assert len(clears) == 1
+        assert entry.state is ConfigEntryState.LOADED
+        coordinator = entry.runtime_data
+        assert "statistics_version" not in entry.data
+        assert coordinator.statistics_status == "rebuild_pending"
+        assert not coordinator.last_import.rebuilt
+        assert "The recorder did not clear the Watercare statistics" in caplog.text
+
+        await _refresh(ha, coordinator)
+
+    # The check before the rebuild let it run again, and this clear succeeded.
+    assert len(clears) == 2
+    assert coordinator.statistics_status == "rebuilt"
+    assert coordinator.last_import.rebuilt
+    assert entry.data["statistics_version"] == 2
+    for statistic_id in ALL_STATISTIC_IDS:
+        rows = await stored_rows(ha, statistic_id)
+        assert len(rows) == 92, statistic_id
+        assert datetime.fromtimestamp(rows[0]["start"], tz=UTC) == day_start(
+            date(2026, 6, 3)
+        )
+    consumption = await stored_rows(ha, STAT_CONSUMPTION)
+    assert consumption[-1]["sum"] == pytest.approx(33000)
 
 
 async def test_rebuild_retries_after_the_import_fails(
     ha: HomeAssistant, mock_api: dict[str, AsyncMock]
 ) -> None:
-    await _add_legacy_statistics(ha)
+    await add_legacy_statistics(ha)
     entry = make_entry(statistics_version=None)
     calls: list[str] = []
 
@@ -609,17 +609,17 @@ async def test_rebuild_retries_after_the_import_fails(
         await _setup(ha, entry)
 
     assert calls == [STAT_CONSUMPTION, STAT_TOTAL_COST]
-    assert entry.state is ConfigEntryState.SETUP_RETRY
+    assert entry.state is ConfigEntryState.LOADED
+    coordinator = entry.runtime_data
+    assert coordinator.statistics_status == "rebuild_pending"
     assert "statistics_version" not in entry.data
-    assert len(await _stored(ha, STAT_CONSUMPTION)) == 92
-    assert await _stored(ha, STAT_TOTAL_COST) == []
+    assert len(await stored_rows(ha, STAT_CONSUMPTION)) == 92
+    assert await stored_rows(ha, STAT_TOTAL_COST) == []
 
-    await ha.config_entries.async_reload(entry.entry_id)
-    await ha.async_block_till_done()
+    await _refresh(ha, coordinator)
 
     # The partial import loses nothing, so the next attempt rebuilds in full.
-    assert entry.state is ConfigEntryState.LOADED
-    assert entry.runtime_data.statistics_status == "rebuilt"
+    assert coordinator.statistics_status == "rebuilt"
     assert entry.data["statistics_version"] == 2
     for statistic_id in ALL_STATISTIC_IDS:
-        assert len(await _stored(ha, statistic_id)) == 92, statistic_id
+        assert len(await stored_rows(ha, statistic_id)) == 92, statistic_id

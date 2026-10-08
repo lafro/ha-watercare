@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, replace
 from datetime import date
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
+from homeassistant.core import callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -39,6 +41,7 @@ from .statistics import (
     async_import,
     async_rebuild,
     async_rebuild_would_lose_history,
+    async_wait_for_queue,
     bill_cost,
     pricing_date,
 )
@@ -69,12 +72,20 @@ class WatercareData:
     period_count: int
     skipped_periods: int
     duplicate_periods: int
-    import_result: ImportResult = field(default_factory=ImportResult)
-    missing_tariff_year: int | None = None
 
 
 class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
-    """Fetch Watercare bills twice a day and keep the statistics current."""
+    """Fetch Watercare bills twice a day and keep the statistics current.
+
+    A poll only talks to Watercare. The statistics are updated afterwards in
+    a background task tied to the config entry, only once Home Assistant has
+    started (``async_start_statistics``) and never after the entry unloads
+    (``async_stop_statistics``), so neither setup nor a poll ever waits for
+    the recorder. The recorder does not work through its queue until Home
+    Assistant has started, and Home Assistant does not finish starting while
+    a config entry is still setting up: waiting for it in setup held start-up
+    until bootstrap cancelled the setup (1.5.0).
+    """
 
     config_entry: WatercareConfigEntry
 
@@ -99,9 +110,16 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
             if entry.data.get(DATA_STATISTICS_VERSION) == STATISTICS_VERSION
             else "rebuild_pending"
         )
+        self.last_import = ImportResult()
+        """What the latest statistics update wrote."""
+        self.missing_tariff_year: int | None = None
+        """The financial year the tariff repair notice asks for, if any."""
+        self._statistics_started = False
+        self._statistics_periods: tuple[BillingPeriod, ...] | None = None
+        self._statistics_task: asyncio.Task[None] | None = None
 
     async def _async_update_data(self) -> WatercareData:
-        """Fetch bills and the account, then update the statistics."""
+        """Fetch bills and the account; the statistics follow in the background."""
         try:
             account = await self.api.async_get_account()
             payload = await self.api.async_get_billing_periods()
@@ -135,8 +153,8 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
 
         periods = parsed.periods
         latest = periods[-1]
-        result = await self._async_update_statistics(periods)
-        missing_year = self._async_check_tariff(result.missing_tariff_year)
+        self._statistics_periods = periods
+        self._async_schedule_statistics()
 
         return WatercareData(
             account=account,
@@ -148,9 +166,68 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
             period_count=len(periods),
             skipped_periods=parsed.skipped,
             duplicate_periods=parsed.duplicates,
-            import_result=result,
-            missing_tariff_year=missing_year,
         )
+
+    @callback
+    def async_start_statistics(self) -> None:
+        """Keep the statistics current from now on.
+
+        Called once Home Assistant has started (``async_setup_entry`` uses
+        ``async_at_started``), with the bills of the poll that set the entry
+        up, and from then on after every poll.
+        """
+        self._statistics_started = True
+        self._async_schedule_statistics()
+
+    @callback
+    def async_stop_statistics(self) -> None:
+        """Start no more statistics updates: the entry is unloading.
+
+        Unloading cancels the running update, but a poll can still be in
+        flight (one started by ``homeassistant.update_entity``, say). When it
+        finishes, it must not start an update that nothing would cancel.
+        """
+        self._statistics_started = False
+        self._statistics_periods = None
+
+    @callback
+    def _async_schedule_statistics(self) -> None:
+        """Update the statistics in the background, one update at a time."""
+        if not self._statistics_started:
+            return
+        if self._statistics_task is not None and not self._statistics_task.done():
+            # The running update takes the newer bills when it finishes.
+            return
+        self._statistics_task = self.config_entry.async_create_background_task(
+            self.hass, self._async_run_statistics(), f"{DOMAIN} statistics"
+        )
+
+    async def _async_run_statistics(self) -> None:
+        """Bring the statistics up to the latest bills polled.
+
+        Unloading the entry or stopping Home Assistant cancels this task. A
+        cancellation can only take effect while it waits for the recorder or
+        reads from it, never between the rebuild's clear and import. One that
+        lands after the rebuild is queued and before it is recorded as done
+        leaves the queued rebuild to the recorder, and the next update
+        rebuilds again, to the same rows.
+        """
+        while (periods := self._statistics_periods) is not None:
+            self._statistics_periods = None
+            try:
+                result = await self._async_update_statistics(periods)
+            except Exception:
+                # A background task has no caller to report to. Nothing that
+                # failed is recorded as done, so the next poll tries again.
+                _LOGGER.exception(
+                    "Could not update the Watercare statistics; the next poll "
+                    "tries again"
+                )
+                continue
+            self.last_import = result
+            self.missing_tariff_year = self._async_check_tariff(
+                result.missing_tariff_year
+            )
 
     async def _async_update_statistics(
         self, periods: tuple[BillingPeriod, ...]
@@ -185,9 +262,40 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
                 self.hass, periods, self.schedule, self.wastewater_ratio
             )
         else:
-            result = await async_rebuild(
+            # Queues the clear and the import together, without awaiting.
+            result, cleared = async_rebuild(
                 self.hass, periods, self.schedule, self.wastewater_ratio
             )
+            # Queued is not written. At shutdown the recorder works through its
+            # queue at the final-write stage. If that stage times out,
+            # Recorder._async_close drops what is left, and that can even
+            # separate the clear from the import. Record the rebuild as done
+            # only once the recorder has taken all of it. Until then the
+            # marker is unset, so whatever a shutdown drops, the next start
+            # rebuilds. Recorded earlier, it could say the statistics were
+            # rebuilt while they still hold the 1.4.x rows, or nothing. Taken
+            # is not always written: an import the recorder retries or drops
+            # after this leaves its statistic empty for now, and the next
+            # update imports an empty statistic in full (docs/statistics.md).
+            await async_wait_for_queue(self.hass)
+            if not cleared.is_set():
+                # The recorder runs the clear only once. On a database error
+                # (a locked SQLite database, a MariaDB lock-wait timeout) it
+                # logs the error and moves on, and the imports behind the
+                # clear still run, on top of the 1.4.x rows. The recorder
+                # takes one task at a time and the imports are queued behind
+                # the clear, so the flag is final by now, except in one
+                # start-up race that can only leave it unset early (a
+                # spurious warning; the next poll rebuilds to the same rows).
+                # Leave the marker unset: the imported rows reach the same
+                # total as a rebuild, so the check above lets the next
+                # update rebuild.
+                _LOGGER.warning(
+                    "The recorder did not clear the Watercare statistics (its "
+                    "log has the error), so the rebuild is not recorded as "
+                    "done; the next poll rebuilds them"
+                )
+                return replace(result, rebuilt=False)
             self.statistics_status = "rebuilt"
 
         self.hass.config_entries.async_update_entry(

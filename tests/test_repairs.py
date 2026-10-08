@@ -33,7 +33,7 @@ async def test_fix_flow_stores_the_new_year_and_reloads(
     entry = make_entry()
     entry.add_to_hass(ha)
     await ha.config_entries.async_setup(entry.entry_id)
-    await ha.async_block_till_done()
+    await ha.async_block_till_done(wait_background_tasks=True)
     issue_id = f"tariff_missing_{entry.entry_id}"
     issue = ir.async_get(ha).async_get_issue(DOMAIN, issue_id)
     assert issue is not None
@@ -57,7 +57,7 @@ async def test_fix_flow_stores_the_new_year_and_reloads(
         {"water_rate": 2.6, "wastewater_rate": 4.5, "fixed_charge": 380}
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    await ha.async_block_till_done()
+    await ha.async_block_till_done(wait_background_tasks=True)
 
     assert entry.options["tariff_overrides"] == {
         "2027": {"water_rate": 2.6, "wastewater_rate": 4.5, "fixed_charge": 380.0}

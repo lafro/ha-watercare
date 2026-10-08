@@ -45,7 +45,7 @@ async def test_sensors(
     entry = make_entry()
     entry.add_to_hass(ha)
     await ha.config_entries.async_setup(entry.entry_id)
-    await ha.async_block_till_done()
+    await ha.async_block_till_done(wait_background_tasks=True)
 
     await snapshot_platform(ha, entity_registry, snapshot, entry.entry_id)
 
@@ -56,7 +56,7 @@ async def test_usage_sensor_attributes_and_values(
     entry = make_entry()
     entry.add_to_hass(ha)
     await ha.config_entries.async_setup(entry.entry_id)
-    await ha.async_block_till_done()
+    await ha.async_block_till_done(wait_background_tasks=True)
 
     usage = ha.states.get("sensor.watercare_last_bill_usage")
     assert usage is not None
