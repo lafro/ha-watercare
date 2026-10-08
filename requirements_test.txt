@@ -1,0 +1,28 @@
+# Test-only dependencies. Not referenced by manifest.json -- these never
+# ship with the integration, they only run the test suite under tests/.
+#
+# Requires Python >= 3.14.
+#
+# Why: coordinator.py imports StatisticMeanType from
+# homeassistant.components.recorder.models, an API that only exists in
+# fairly recent Home Assistant releases (the project's own git history has
+# a commit migrating to it: "fix homeassistants async_import_statistics
+# mean_type deprecation"). pytest-homeassistant-custom-component pins an
+# exact homeassistant version per release. On Python 3.12, the newest
+# installable release is 0.13.205 -> homeassistant==2025.1.4, which predates
+# StatisticMeanType entirely (StatisticMetaData there has no mean_type or
+# unit_class field at all) -- custom_components/watercare/coordinator.py
+# fails to import under it with:
+#   ImportError: cannot import name 'StatisticMeanType' from
+#   'homeassistant.components.recorder.models'
+# Every pytest-homeassistant-custom-component release newer than 0.13.205
+# requires Python >= 3.13 (up to 0.13.316) or >= 3.14 (0.13.317 onward), so
+# there is no way to get a HA version new enough to have StatisticMeanType
+# while staying on Python 3.12. Python 3.14 was available on this machine
+# (Homebrew), so that's what these are pinned against, installing cleanly
+# with no version downgrades required.
+#
+# pytest-homeassistant-custom-component's version tracks homeassistant
+# exactly: 0.13.354 -> homeassistant==2026.8.0.
+pytest==9.0.3
+pytest-homeassistant-custom-component==0.13.354

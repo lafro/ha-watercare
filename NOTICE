@@ -1,0 +1,17 @@
+Watercare for Home Assistant
+Copyright (c) 2026 lafro and contributors
+
+This project continues the MIT-licensed ha-watercare integration originally
+written by brunsy and contributors:
+https://github.com/brunsy/ha-watercare
+
+Code reused from that project remains under its MIT licence; the original
+copyright notice is kept in LICENSE. This repository was started as a fresh,
+standalone history (not a GitHub fork). Its first commit imports the code of
+lafro/ha-watercare v1.4.1, a fork of the project above, with test fixtures
+replaced by synthetic values.
+
+No Watercare source code, credentials or customer records are included in this
+repository. The Watercare name and logo are used only to identify the service
+the integration supports. They remain the property of Watercare Services
+Limited, and their inclusion does not imply endorsement.
