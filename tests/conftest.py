@@ -18,6 +18,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from homeassistant.components.recorder import Recorder
 from homeassistant.core import HomeAssistant
+from pytest_homeassistant_custom_component.syrupy import HomeAssistantSnapshotExtension
+from syrupy.assertion import SnapshotAssertion
 
 from custom_components.watercare.api import WatercareApi
 from custom_components.watercare.models import AccountSummary
@@ -31,6 +33,12 @@ pytest_plugins = "pytest_homeassistant_custom_component"
 def quiet_sqlalchemy() -> None:
     """Keep the harness's SQL echo out of test output."""
     logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+
+
+@pytest.fixture
+def snapshot(snapshot: SnapshotAssertion) -> SnapshotAssertion:
+    """Use Home Assistant's snapshot format whatever order plugins load in."""
+    return snapshot.use_extension(HomeAssistantSnapshotExtension)
 
 
 @pytest.fixture
