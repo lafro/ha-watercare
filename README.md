@@ -109,7 +109,7 @@ Entering the prices there (or in the options), or updating to a release that inc
 
 ## Upgrading from 1.4.x
 
-Version 1.5.0 changes how the statistics are stored (daily rows instead of one row per bill, and each bill at the prices of the year it starts in). On its first poll it clears the four `watercare:*` statistics and imports the whole history again in the new format, once. **Back up Home Assistant and export these statistics first.** The steps, a read-only pre-flight, the checks and the rollback are in [docs/migration.md](docs/migration.md). The entities, their history and the Energy dashboard configuration are kept.
+Version 1.5.0 changes how the statistics are stored (daily rows instead of one row per bill, and each bill at the prices of the year it starts in). Shortly after Home Assistant starts, it clears the four `watercare:*` statistics and imports the whole history again in the new format, once. Upgrade to 1.5.1 or later: 1.5.0 did this during start-up and could hold Home Assistant's start-up for 5 minutes and leave the statistics empty. **Back up Home Assistant and export these statistics first.** The steps, a read-only pre-flight, the checks and the rollback are in [docs/migration.md](docs/migration.md). The entities, their history and the Energy dashboard configuration are kept.
 
 The flat prices entered in 1.4.x are replaced by the published price table. If they matched a published year, nothing else changes; if they did not, they are kept as the current year's prices.
 
@@ -174,6 +174,7 @@ automation:
 - **Re-authentication requested:** Watercare rejected the stored password. Enter the current one.
 - **Costs stopped after 1 July:** the integration does not know the new year's prices yet. Fix the repair notice or update the integration.
 - **A "statistics were not rebuilt" repair notice:** see [docs/statistics.md](docs/statistics.md#when-the-rebuild-is-skipped).
+- **Watercare in an error state after upgrading to 1.5.0, and no water in the Energy dashboard:** reload Watercare, or update to 1.5.1. See [docs/migration.md](docs/migration.md#if-a-150-upgrade-got-stuck).
 - For a reproducible problem, use the integration's ⋮ menu to **Enable debug logging**, reproduce it, then **Disable debug logging** to download the log. Download diagnostics from the same menu. Logs and diagnostics leave out credentials, account and meter numbers and usage, but review them before sharing and follow the issue form's privacy warning.
 
 ## Removal

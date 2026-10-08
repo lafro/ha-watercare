@@ -55,16 +55,31 @@ If no tariff is known for the year a bill starts in (a new financial year the re
 
 ## The one-off rebuild (upgrade from 1.4.x)
 
-Statistics written by 1.4.x have one row per bill and are priced at one flat tariff, so they cannot be continued. Each config entry records `statistics_version: 2` once its statistics are in the new format. On the first successful poll of an entry without that marker, the integration:
+Statistics written by 1.4.x have one row per bill and are priced at one flat tariff, so they cannot be continued. Each config entry records `statistics_version: 2` once its statistics are in the new format. On the first statistics update of an entry without that marker (after Home Assistant has started; see below), the integration:
 
 1. checks that a rebuild would not lose history: the stored consumption must not start before the oldest bill Watercare now returns, and its running total must not exceed what a rebuild reaches by the same day (which would mean a bill Watercare no longer returns; see below);
-2. clears the four statistics through the recorder's own queue (`Recorder.async_clear_statistics`) and waits for the recorder to confirm;
-3. imports the full history as daily rows from zero (`async_add_external_statistics`, the recorder API for external statistics; `async_import_statistics` is the equivalent for entity statistics);
+2. works out the daily rows for the full history, from zero;
+3. queues a clear of the four statistics (`Recorder.async_clear_statistics`) and then the import of those rows (`async_add_external_statistics`, the recorder API for external statistics; `async_import_statistics` is the equivalent for entity statistics) on the recorder's queue;
 4. records the marker.
 
-Both steps run in the event loop and are queued on the recorder thread in order, so the import always follows the clear. Nothing runs SQL directly. The marker is recorded only after the import is queued: if the clear times out (after 5 minutes) or the import fails, the poll fails, the marker stays unset and the next attempt checks and rebuilds again. A partly imported history never holds more than the bills Watercare returns, so that check lets the rebuild run. `tests/test_init.py` covers both failures and the full upgrade from a 1.4.x entry. The log shows a warning before and after the rebuild. It only touches the four `watercare:*` statistics and only runs after Watercare has returned at least one valid bill.
+Steps 3 and 4 happen in one go in the event loop, without awaiting anything, so the recorder always runs the import straight after the clear, and no cancellation, timeout or shutdown can come between them. Nothing waits for the recorder to confirm either, and nothing runs SQL directly. The marker is recorded only once the import is queued: if a read fails, or the import is refused, the update logs `Could not update the Watercare statistics`, the marker stays unset and the next poll checks and rebuilds again. A partly imported history never holds more than the bills Watercare returns, so that check lets the rebuild run. `tests/test_init.py` covers both failures and the full upgrade from a 1.4.x entry. The log shows a warning before and after the rebuild. It only touches the four `watercare:*` statistics and only runs after Watercare has returned at least one valid bill.
 
-A new config entry also has no marker, so its first poll clears and re-imports these statistics too. That is harmless: the result is the same rows.
+A new config entry also has no marker, so its first statistics update clears and re-imports these statistics too. That is harmless: the result is the same rows.
+
+### Start-up and the recorder
+
+Home Assistant's recorder writes statistics from a queue on its own thread, and it does not start working through that queue until Home Assistant has started. Home Assistant in turn does not finish starting while a config entry set up during start-up is still setting up. So an integration must never wait for the recorder during setup.
+
+1.5.0 broke this rule: it rebuilt inside the first poll of setup and waited (up to 5 minutes) for the recorder to confirm the clear. On a restart with the rebuild pending, setup and start-up waited for each other until Home Assistant's 5-minute start-up timeout cancelled the setup, after the clear was queued and before the import was. Start-up was held all that time, and the statistics were left empty. A reload rebuilt them, because the marker had not been recorded. A normal poll was affected less: it never waited for the queue, but it read the stored statistics during setup, so a slow database could hold start-up for as long as the read took.
+
+From 1.5.1:
+
+- A poll only fetches the bills and the account. The statistics update, the one-off rebuild included, runs afterwards as a background task of the config entry, and only once Home Assistant has started (`async_at_started`). Setup never waits for it, and unloading the entry or stopping Home Assistant cancels it.
+- One update runs at a time. A poll that finishes while an update is still running leaves its bills for that update to take next.
+- Before reading the stored statistics, an update waits for the recorder to commit what is already queued (the recorder's `async_block_till_done`, as Home Assistant's history and logbook do before their reads). Reads go straight to the database, so otherwise a poll that follows a rebuild while the recorder is busy could read the 1.4.x rows and continue their sums.
+- The rebuild queues the clear and the import back to back (above), so a cancellation can only arrive before the clear or after the marker.
+
+`tests/test_startup.py` holds the recorder's thread, as start-up does, and checks that setup finishes at once and the statistics are rebuilt afterwards, including when the task is cancelled the moment the clear is queued; those tests fail on 1.5.0.
 
 ### When the rebuild is skipped
 

@@ -33,7 +33,7 @@ async def test_diagnostics_hold_no_identifiers(
     )
     entry.add_to_hass(ha)
     await ha.config_entries.async_setup(entry.entry_id)
-    await ha.async_block_till_done()
+    await ha.async_block_till_done(wait_background_tasks=True)
 
     result = await async_get_config_entry_diagnostics(ha, entry)
 
@@ -51,7 +51,7 @@ async def test_diagnostics_after_a_failed_poll(
     entry = make_entry()
     entry.add_to_hass(ha)
     await ha.config_entries.async_setup(entry.entry_id)
-    await ha.async_block_till_done()
+    await ha.async_block_till_done(wait_background_tasks=True)
     coordinator = entry.runtime_data
 
     mock_api["account"].side_effect = WatercareConnectionError("down")

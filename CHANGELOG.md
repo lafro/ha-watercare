@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.5.1
+
+Fixes a start-up problem in 1.5.0's one-off statistics rebuild.
+
+### What went wrong
+
+On the first start after upgrading from 1.4.x, 1.5.0 rebuilt the water statistics while Home Assistant was still starting, and waited for the database to confirm that the old statistics were cleared. Home Assistant's database only gets to that kind of work once start-up has finished, and start-up was waiting for the integration, so each waited for the other. After 5 minutes Home Assistant gave up on the integration (the log says `Setup of config entry 'Watercare' for watercare integration cancelled`) and finished starting. Until then, nothing that waits for start-up ran, automations included. The old statistics were then cleared but the new ones never written: the four `watercare:*` statistics were empty, the Energy dashboard showed no water, and Watercare stayed in an error state under **Settings → Devices & services**.
+
+**Who is affected:** upgrades from 1.4.x to 1.5.0, where the rebuild ran on the restart after the upgrade. Adding Watercare for the first time on 1.5.0 was not affected, because Home Assistant is already running then, and neither is an installation whose rebuild finished.
+
+### What changes
+
+- Setup no longer touches the statistics. The integration loads straight away, and the statistics, including the one-off rebuild, are updated in the background once Home Assistant has started. This covers every poll: a normal poll also read the stored statistics during setup, so a slow database could delay start-up too.
+- The clear and the import are handed to the database together, so a timeout, a reload or a restart can no longer leave the statistics cleared and empty.
+- If a statistics update fails, the integration stays loaded and the next poll tries again. Before, the whole integration failed to set up.
+
+### What you need to do
+
+- **Your 1.5.0 rebuild finished** (the Energy dashboard shows daily water use, and the Watercare diagnostics show `statistics_version: 2`): nothing. 1.5.1 does not rebuild again.
+- **Your 1.5.0 upgrade got stuck** (Watercare shows an error, or the water statistics are empty): reload Watercare (**Settings → Devices & services → Watercare → ⋮ → Reload**), or update to 1.5.1 and restart. 1.5.0 never recorded the stuck rebuild as done, so the next setup rebuilds the full history from Watercare's bills. Nothing is lost: 1.5.0 only clears the statistics after checking that Watercare's bills can recreate everything stored. See [docs/migration.md](docs/migration.md#if-a-150-upgrade-got-stuck).
+- **Still on 1.4.x:** upgrade straight to 1.5.1, following [docs/migration.md](docs/migration.md) as before. The rebuild now runs shortly after start-up instead of during it.
+
 ## 1.5.0
 
 First release from the standalone `lafro/ha-watercare` repository. The domain, entities and statistic ids are unchanged, so an existing installation keeps its configuration.

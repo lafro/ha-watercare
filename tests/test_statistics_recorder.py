@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from functools import partial
 from typing import Any
+from unittest.mock import patch
 
 import pytest
-from homeassistant.components.recorder import get_instance
+from homeassistant.components.recorder import Recorder, get_instance
 from homeassistant.components.recorder.models import StatisticMeanType
 from homeassistant.components.recorder.statistics import (
     async_add_external_statistics,
@@ -21,6 +23,7 @@ from pytest_homeassistant_custom_component.components.recorder.common import (
 )
 
 from custom_components.watercare.const import (
+    ALL_STATISTIC_IDS,
     STAT_CONSUMPTION,
     STAT_CONSUMPTION_COST,
     STAT_TOTAL_COST,
@@ -28,7 +31,6 @@ from custom_components.watercare.const import (
 )
 from custom_components.watercare.models import BillingPeriod
 from custom_components.watercare.statistics import (
-    async_clear,
     async_import,
     async_rebuild,
     async_rebuild_would_lose_history,
@@ -41,7 +43,7 @@ from custom_components.watercare.tariffs import (
     TariffSchedule,
 )
 
-from .common import api_period
+from .common import api_period, recorder_held
 
 RATIO = Decimal("0.785")
 PUBLISHED = TariffSchedule({})
@@ -265,7 +267,7 @@ async def test_rebuild_replaces_legacy_rows(ha: HomeAssistant) -> None:
     await _add_legacy_rows(ha)
     assert len(await _rows(ha, STAT_CONSUMPTION)) == 2
 
-    result = await async_rebuild(ha, [JUNE, JULY], PUBLISHED, RATIO)
+    result = async_rebuild(ha, [JUNE, JULY], PUBLISHED, RATIO)
 
     assert result.rebuilt
     assert result.consumption_rows == 62
@@ -281,19 +283,80 @@ async def test_rebuild_replaces_legacy_rows(ha: HomeAssistant) -> None:
     assert total[-1]["sum"] == pytest.approx(float(june.total + july.total))
 
 
-async def test_clear_removes_all_four_statistics(ha: HomeAssistant) -> None:
-    await async_import(ha, [JUNE], PUBLISHED, RATIO)
+async def test_rebuild_clears_all_four_statistics(ha: HomeAssistant) -> None:
+    await async_import(ha, [JUNE, JULY], PUBLISHED, RATIO)
     await async_wait_recording_done(ha)
 
-    await async_clear(ha)
+    async_rebuild(ha, [JULY], PUBLISHED, RATIO)
 
-    for statistic_id in (
+    for statistic_id in ALL_STATISTIC_IDS:
+        rows = await _rows(ha, statistic_id)
+        assert len(rows) == 31, statistic_id
+        assert _start(rows[0]) == day_start(date(2026, 7, 4)), statistic_id
+
+
+async def test_rebuild_queues_the_clear_and_the_import_back_to_back(
+    ha: HomeAssistant,
+) -> None:
+    """One call, no await: nothing can come between the clear and the import."""
+    queued: list[Any] = []
+    queue_task = Recorder.queue_task
+
+    def _record(self: Recorder, task: Any) -> None:
+        queued.append(task)
+        queue_task(self, task)
+
+    with patch.object(Recorder, "queue_task", _record):
+        result = async_rebuild(ha, [JUNE, JULY], PUBLISHED, RATIO)
+
+    assert result.rebuilt
+    assert [type(task).__name__ for task in queued] == [
+        "ClearStatisticsTask",
+        *["ImportStatisticsTask"] * 4,
+    ]
+    clear = queued[0]
+    assert sorted(clear.statistic_ids) == sorted(ALL_STATISTIC_IDS)
+    # Nothing waits for the recorder to confirm the clear.
+    assert clear.on_done is None
+    assert [task.metadata["statistic_id"] for task in queued[1:]] == [
         STAT_CONSUMPTION,
         STAT_TOTAL_COST,
         STAT_CONSUMPTION_COST,
         STAT_WASTEWATER_COST,
-    ):
-        assert await _rows(ha, statistic_id) == []
+    ]
+
+
+async def test_an_import_reads_only_after_queued_writes(ha: HomeAssistant) -> None:
+    """A poll right after a rebuild continues the rebuilt rows, not the old ones.
+
+    The recorder is busy, so the rebuild is still queued when the next import
+    starts. Reading the stored history then would find the 1.4.x rows and
+    continue their sums.
+    """
+    await _add_legacy_rows(ha)
+
+    async with recorder_held(ha):
+        async_rebuild(ha, [JUNE, JULY], PUBLISHED, RATIO)
+        poll = asyncio.ensure_future(
+            async_import(ha, [JUNE, JULY, AUGUST], PUBLISHED, RATIO)
+        )
+        await asyncio.sleep(0.1)
+        assert not poll.done()
+    result = await poll
+
+    assert result.consumption_rows == 30
+    rows = await _rows(ha, STAT_CONSUMPTION)
+    assert len(rows) == 92
+    assert rows[-1]["sum"] == pytest.approx(33000)
+    total = await _rows(ha, STAT_TOTAL_COST)
+    assert len(total) == 92
+    costs = [
+        bill_cost(period, [JUNE, JULY, AUGUST], PUBLISHED, RATIO)
+        for period in (JUNE, JULY, AUGUST)
+    ]
+    assert total[-1]["sum"] == pytest.approx(
+        float(sum(cost.total for cost in costs if cost is not None))
+    )
 
 
 async def test_rebuild_guard(ha: HomeAssistant) -> None:

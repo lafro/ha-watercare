@@ -1,6 +1,8 @@
-# Upgrading from 1.4.x to 1.5.0
+# Upgrading from 1.4.x to 1.5
 
 1.5.0 rebuilds the four `watercare:*` statistics once, in a new format (daily rows, each bill at the prices of the year it starts in; see [statistics.md](statistics.md)). This page is the operator runbook: what to do before, how to check the result, and how to roll back.
+
+Upgrade to 1.5.1 or later rather than 1.5.0. 1.5.0 ran the rebuild during start-up and could get stuck there; see [If a 1.5.0 upgrade got stuck](#if-a-150-upgrade-got-stuck).
 
 The entities, their recorded history and the Energy dashboard configuration are kept: the domain, the entity unique ids and the statistic ids are unchanged.
 
@@ -37,7 +39,21 @@ The entities, their recorded history and the Energy dashboard configuration are 
 1. If the integration came from a different HACS repository, remove that custom repository in HACS first, then add `https://github.com/lafro/ha-watercare` and download the new version. Otherwise update as usual.
 2. Restart Home Assistant.
 3. The config entry migrates (1.1 to 1.2): flat 1.4.x prices that match a published year are dropped in favour of the published table; others are kept as the current year's prices. The log says which.
-4. On the first poll the log shows `Rebuilding the Watercare statistics in the 1.5.0 format …` and then `Watercare statistics rebuilt: …`. If the clear or the import fails, the poll fails and the next attempt rebuilds again (the entry only records `statistics_version: 2` once the import is queued).
+4. The integration loads as soon as it has fetched the bills. Once Home Assistant has started, the log shows `Rebuilding the Watercare statistics in the 1.5.0 format …` and then `Watercare statistics rebuilt: …`. If the rebuild fails, the log says `Could not update the Watercare statistics`, the integration stays loaded and the next poll rebuilds again (the entry only records `statistics_version: 2` once the import is queued).
+
+## If a 1.5.0 upgrade got stuck
+
+1.5.0 ran the rebuild while Home Assistant was starting and waited for the database, which only works through such requests once start-up has finished. Start-up then stalled for 5 minutes, automations included, until Home Assistant cancelled the integration's setup: the log shows `Setup of config entry 'Watercare' for watercare integration cancelled`. The cancellation came after the statistics were cleared and before the new rows were imported, so afterwards:
+
+- Watercare shows an error under **Settings → Devices & services**;
+- the four `watercare:*` statistics are empty, and the Energy dashboard shows no water;
+- the entry has no `statistics_version` (in the diagnostics), because the rebuild was never recorded as done.
+
+To fix it, reload Watercare (**⋮ → Reload**), or update to 1.5.1 and restart. The next setup finds the statistics empty, so nothing can be lost, and rebuilds the whole history from Watercare's bills. Then check the result as below. 1.5.0 only cleared the statistics after checking that Watercare's bills reach back as far as the stored history, so the rebuild recreates everything; the export from [Before upgrading](#before-upgrading) remains the fallback.
+
+If the 1.5.0 rebuild finished (daily water bars, `statistics_version: 2`), there is nothing to do: 1.5.1 does not rebuild again.
+
+1.5.1 never touches the statistics during setup. It loads straight away and updates the statistics in the background once Home Assistant has started, and it queues the clear and the import together, so they cannot be split ([statistics.md](statistics.md#start-up-and-the-recorder)).
 
 ## Checking the result
 

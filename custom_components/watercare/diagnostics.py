@@ -67,7 +67,8 @@ async def async_get_config_entry_diagnostics(
     }
     if data is not None:
         period = data.latest_period
-        imported = data.import_result
+        imported = coordinator.last_import
+        missing_tariff_year = coordinator.missing_tariff_year
         result["coordinator"].update(
             {
                 "account_present": data.account is not None,
@@ -83,8 +84,8 @@ async def async_get_config_entry_diagnostics(
                 },
                 "latest_cost_available": data.latest_cost is not None,
                 "missing_tariff_year": (
-                    financial_year_label(data.missing_tariff_year)
-                    if data.missing_tariff_year is not None
+                    financial_year_label(missing_tariff_year)
+                    if missing_tariff_year is not None
                     else None
                 ),
                 "last_import": {
