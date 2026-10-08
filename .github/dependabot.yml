@@ -1,0 +1,25 @@
+version: 2
+updates:
+  # uv updates pyproject.toml and uv.lock together, so CI (uv sync --locked)
+  # tests exactly what a pull request proposes.
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      python:
+        patterns: ["*"]
+    ignore:
+      # pyproject.toml overrides the harness's Home Assistant beta pin with
+      # the matching release, so a separate homeassistant bump would not
+      # change what is tested. Bump pytest-homeassistant-custom-component
+      # instead; test_home_assistant_under_test_matches_the_harness fails
+      # when the override no longer matches it.
+      - dependency-name: homeassistant
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]

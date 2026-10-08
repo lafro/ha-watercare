@@ -1,0 +1,138 @@
+name: Release
+
+# Run from main with a tag that matches the committed version, for example
+# v1.5.0. The workflow re-runs every gate, creates the immutable tag on the
+# exact commit that passed, then publishes the release with that version's
+# CHANGELOG section as its notes. It never edits files: manifest.json and
+# pyproject.toml must already carry the version.
+#
+# It only publishes from lafro/ha-watercare, the name the manifest, the repair
+# links and HACS use: the python job checks the manifest's links against this
+# repository, and the release job is skipped anywhere else. See the cut-over
+# checklist in docs/release.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag matching the committed version (for example v1.5.0)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  python:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      notes: ${{ steps.versions.outputs.notes }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.14"
+          # No cache restore: the release gates install from a clean state.
+          enable-cache: false
+      - run: uv sync --all-groups --locked
+      - name: Validate release tag, versions, repository and CHANGELOG entry
+        id: versions
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          notes_file="$RUNNER_TEMP/release-notes.md"
+          uv run python scripts/check_versions.py "$RELEASE_TAG" \
+            --release-notes "$notes_file" --repository "$GITHUB_REPOSITORY"
+          delimiter="notes_$(openssl rand -hex 16)"
+          {
+            echo "notes<<$delimiter"
+            cat "$notes_file"
+            echo "$delimiter"
+          } >> "$GITHUB_OUTPUT"
+      - run: uv run ruff format --check .
+      - run: uv run ruff check .
+      - run: uv run mypy custom_components/watercare
+      - run: uv run pytest
+      - run: uv run python scripts/check_module_coverage.py
+
+  hassfest:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: home-assistant/actions/hassfest@06749dd8c0b54f350bc69c8752456cee498808a3
+
+  hacs:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: hacs/action@1ebf01c408f29afcb6406bd431bc98fd8cbb15aa
+        with:
+          category: integration
+
+  release:
+    if: github.ref == 'refs/heads/main' && github.repository == 'lafro/ha-watercare'
+    needs: [python, hassfest, hacs]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Create and verify immutable release tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          existing_sha="$(
+            gh api "repos/$GH_REPO/git/matching-refs/tags/$RELEASE_TAG" \
+              --jq ".[] | select(.ref == \"refs/tags/$RELEASE_TAG\") | .object.sha"
+          )"
+          if [[ -n "$existing_sha" && "$existing_sha" != "$GITHUB_SHA" ]]; then
+            echo "Release tag already points to a different commit" >&2
+            exit 1
+          fi
+          if [[ -z "$existing_sha" ]]; then
+            gh api --method POST "repos/$GH_REPO/git/refs" \
+              -f ref="refs/tags/$RELEASE_TAG" \
+              -f sha="$GITHUB_SHA" >/dev/null
+          fi
+          verified_sha="$(
+            gh api "repos/$GH_REPO/git/ref/tags/$RELEASE_TAG" --jq '.object.sha'
+          )"
+          [[ "$verified_sha" == "$GITHUB_SHA" ]]
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          # This version's CHANGELOG.md section, checked by the python job.
+          RELEASE_NOTES: ${{ needs.python.outputs.notes }}
+        run: |
+          notes_file="$RUNNER_TEMP/release-notes.md"
+          printf '%s\n' "$RELEASE_NOTES" > "$notes_file"
+          [[ -n "$RELEASE_NOTES" ]]
+          gh release create "$RELEASE_TAG" \
+            --verify-tag \
+            --title "$RELEASE_TAG" \
+            --notes-file "$notes_file" \
+            --generate-notes \
+            --fail-on-no-commits

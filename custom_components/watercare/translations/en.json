@@ -3,53 +3,172 @@
     "step": {
       "user": {
         "title": "Connect to Watercare",
-        "description": "Sign in with your Watercare account. The rates are listed on your bill under 'Charge details' \u2014 Watercare changes prices every July, so re-check them then.",
+        "description": "Sign in with your Watercare account. Mechanical (monthly-read) meters are supported. Costs are calculated from Watercare's published prices for each financial year.",
         "data": {
           "username": "Email",
-          "password": "Password",
-          "consumption_rate": "Water rate ($ per kL, incl. GST)",
-          "wastewater_rate": "Wastewater rate ($ per kL, incl. GST)",
-          "wastewater_ratio": "Wastewater ratio",
-          "annual_line_charge": "Fixed wastewater charge ($ per year)"
+          "password": "Password"
         },
         "data_description": {
-          "wastewater_ratio": "Fraction of water volume billed as wastewater \u2014 shown on the bill as e.g. '@78.50%', entered here as 0.785.",
-          "annual_line_charge": "Shown on the bill under 'Fixed charges' as a 'pa' amount."
+          "username": "The email address you use to sign in to the Watercare app or My Account.",
+          "password": "Your Watercare password. It is stored in Home Assistant and sent only to Watercare."
         }
       },
       "reauth_confirm": {
-        "title": "Re-authenticate Watercare",
-        "description": "The stored password for {username} no longer works. Enter the current Watercare password.",
+        "title": "Sign in to Watercare again",
+        "description": "Watercare no longer accepts the stored password for {username}. Enter the current password.",
         "data": {
           "password": "Password"
+        },
+        "data_description": {
+          "password": "Your Watercare password. It is stored in Home Assistant and sent only to Watercare."
+        }
+      },
+      "reconfigure": {
+        "title": "Update the Watercare sign-in",
+        "description": "Change the email or password for this Watercare account. The account itself cannot be changed here; add a new entry for a different account.",
+        "data": {
+          "username": "Email",
+          "password": "Password"
+        },
+        "data_description": {
+          "username": "The email address you use to sign in to the Watercare app or My Account.",
+          "password": "Your Watercare password. It is stored in Home Assistant and sent only to Watercare."
         }
       }
     },
     "error": {
-      "invalid_auth": "Watercare rejected the email or password",
-      "cannot_connect": "Could not connect to Watercare \u2014 try again shortly"
+      "invalid_auth": "Watercare rejected the email or password.",
+      "cannot_connect": "Could not connect to Watercare. Try again shortly.",
+      "unknown": "Unexpected error. Check the Home Assistant log for details."
     },
     "abort": {
-      "already_configured": "This Watercare account is already configured",
-      "reauth_successful": "Re-authentication was successful"
+      "already_configured": "This Watercare account is already configured.",
+      "reauth_successful": "Re-authentication was successful.",
+      "reconfigure_successful": "The Watercare sign-in was updated.",
+      "wrong_account": "These credentials belong to a different Watercare account. Add it as a new entry instead."
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "Watercare options",
-        "description": "Rates come from your bill's 'Charge details' section and change every July.",
+        "title": "Watercare prices",
+        "description": "Prices for bills that start in the {financial_year} financial year, including GST, pre-filled from Watercare's published price schedule or from your own earlier entry. Change them only if your bill shows different prices. Earlier years always use the published prices, and a change never reprices days that are already recorded.",
         "data": {
-          "consumption_rate": "Water rate ($ per kL, incl. GST)",
-          "wastewater_rate": "Wastewater rate ($ per kL, incl. GST)",
           "wastewater_ratio": "Wastewater ratio",
-          "annual_line_charge": "Fixed wastewater charge ($ per year)"
+          "water_rate": "Water rate",
+          "wastewater_rate": "Wastewater rate",
+          "fixed_charge": "Wastewater fixed charge"
         },
         "data_description": {
-          "wastewater_ratio": "Fraction of water volume billed as wastewater \u2014 shown on the bill as e.g. '@78.50%', entered here as 0.785.",
-          "annual_line_charge": "Shown on the bill under 'Fixed charges' as a 'pa' amount."
+          "wastewater_ratio": "Share of metered water billed as wastewater. Shown on the bill as, for example, '@78.50%', entered here as 0.785. Most homes are 0.785 and apartments 0.95.",
+          "water_rate": "Per 1,000 litres of water, including GST. Shown on the bill under 'Charge details'.",
+          "wastewater_rate": "Per 1,000 litres of wastewater, including GST.",
+          "fixed_charge": "Per year, including GST. Shown on the bill under 'Fixed charges' as a 'pa' amount."
+        }
+      },
+      "new_year": {
+        "title": "Watercare prices",
+        "description": "This version of the integration does not know Watercare's prices for the {financial_year} financial year, so cost statistics pause at the first bill that starts on or after 1 July. Enter all three prices from a bill that starts in {financial_year} (including GST), or leave them empty to keep waiting for a release that includes them. Prices never reprice days that are already recorded.",
+        "data": {
+          "wastewater_ratio": "Wastewater ratio",
+          "water_rate": "Water rate",
+          "wastewater_rate": "Wastewater rate",
+          "fixed_charge": "Wastewater fixed charge"
+        },
+        "data_description": {
+          "wastewater_ratio": "Share of metered water billed as wastewater. Shown on the bill as, for example, '@78.50%', entered here as 0.785. Most homes are 0.785 and apartments 0.95.",
+          "water_rate": "Per 1,000 litres of water, including GST. Shown on the bill under 'Charge details'.",
+          "wastewater_rate": "Per 1,000 litres of wastewater, including GST.",
+          "fixed_charge": "Per year, including GST. Shown on the bill under 'Fixed charges' as a 'pa' amount."
         }
       }
+    },
+    "error": {
+      "incomplete_prices": "Enter all three prices, or leave all three empty."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "last_bill_usage": {
+        "name": "Last bill usage"
+      },
+      "last_bill_cost": {
+        "name": "Last bill cost"
+      },
+      "daily_average": {
+        "name": "Daily average"
+      },
+      "billing_period_end": {
+        "name": "Last billing period end"
+      },
+      "payment_due_date": {
+        "name": "Payment due"
+      },
+      "reading_type": {
+        "name": "Reading type"
+      },
+      "efficiency_band": {
+        "name": "Household efficiency band"
+      },
+      "account_balance": {
+        "name": "Account balance"
+      },
+      "amount_due": {
+        "name": "Amount due"
+      },
+      "overdue_amount": {
+        "name": "Overdue amount"
+      },
+      "meter_number": {
+        "name": "Meter number"
+      }
+    }
+  },
+  "exceptions": {
+    "auth_failed": {
+      "message": "Watercare rejected the stored sign-in."
+    },
+    "cannot_connect": {
+      "message": "Could not get data from Watercare: {error}"
+    },
+    "unexpected_response": {
+      "message": "Watercare returned billing data in an unexpected format."
+    },
+    "no_billing_periods": {
+      "message": "Watercare returned no completed billing periods."
+    },
+    "missing_credentials": {
+      "message": "The Watercare config entry has no email or password. Remove it and add the integration again."
+    }
+  },
+  "issues": {
+    "tariff_missing": {
+      "title": "Watercare prices for {financial_year} are needed",
+      "fix_flow": {
+        "step": {
+          "init": {
+            "title": "Watercare prices for {financial_year}",
+            "description": "Watercare changes its prices every 1 July and charges each bill at the prices in force when its billing period starts. This version of the integration does not know the {financial_year} prices yet, so water cost statistics are paused from the first bill that starts in {financial_year}; usage is still recorded. Copy the prices from that bill, or update the integration once a release includes them. Prices entered here never reprice days that are already recorded.",
+            "data": {
+              "water_rate": "Water rate",
+              "wastewater_rate": "Wastewater rate",
+              "fixed_charge": "Wastewater fixed charge"
+            },
+            "data_description": {
+              "water_rate": "Per 1,000 litres of water, including GST. Shown on the bill under 'Charge details'.",
+              "wastewater_rate": "Per 1,000 litres of wastewater, including GST.",
+              "fixed_charge": "Per year, including GST. Shown on the bill under 'Fixed charges' as a 'pa' amount."
+            }
+          }
+        },
+        "abort": {
+          "entry_not_found": "The Watercare config entry no longer exists."
+        }
+      }
+    },
+    "statistics_rebuild_skipped": {
+      "title": "Watercare statistics were not rebuilt",
+      "description": "Version 1.5.0 records water use as daily rows, each bill priced at the tariff in force when it started. It did not rebuild the stored Watercare statistics because they reach back further than the bills Watercare now returns, and a rebuild would lose that history. New days are added after the stored history. See the statistics documentation for a manual rebuild."
     }
   }
 }

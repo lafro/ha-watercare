@@ -1,61 +1,64 @@
-"""Constants for Watercare integration."""
+"""Constants for the Watercare integration."""
 
+from __future__ import annotations
+
+from datetime import timedelta
+from typing import Final
 from zoneinfo import ZoneInfo
 
 from homeassistant.const import Platform
 
-NZ_TIMEZONE = ZoneInfo("Pacific/Auckland")
+DOMAIN: Final = "watercare"
+NZ_TIMEZONE: Final = ZoneInfo("Pacific/Auckland")
+PLATFORMS: Final = [Platform.SENSOR]
 
-DOMAIN = "watercare"
-SENSOR_NAME = "Watercare"
+# Bills are monthly and account state changes at most daily. Two cheap polls a
+# day pick up a new bill on the day it is issued.
+UPDATE_INTERVAL: Final = timedelta(hours=12)
 
-# Configuration keys
-CONF_CONSUMPTION_RATE = "consumption_rate"
-CONF_WASTEWATER_RATE = "wastewater_rate"
-CONF_WASTEWATER_RATIO = "wastewater_ratio"
-CONF_ANNUAL_LINE_CHARGE = "annual_line_charge"
-CONF_ENDPOINT = "endpoint"
+# Config entry data.
+CONF_REFRESH_TOKEN: Final = "refresh_token"  # noqa: S105 - a key name, not a secret
+DATA_STATISTICS_VERSION: Final = "statistics_version"
+# Version 2 is the 1.5.0 format: one row per day, anchored to stored history,
+# priced with the tariff in force on each day. Entries without this marker get
+# a one-off rebuild of their statistics (see statistics.async_rebuild).
+STATISTICS_VERSION: Final = 2
 
-# Default cost rate per 1000L (NZD) - typical NZ Watercare rates
-DEFAULT_CONSUMPTION_RATE = 2.296  # $2.296 per 1000L
-DEFAULT_WASTEWATER_RATE = 3.994  # $3.994 per 1000L
-DEFAULT_WASTEWATER_RATIO = 0.785  # 78.50% of water usage is wastewater
-DEFAULT_ANNUAL_LINE_CHARGE = 332  # $332 per annum fixed wastewater charge (FY2026/27)
-# The integration is mechanical-monthly only for now (see coordinator.py's
-# _async_update_data for why). This stays a named constant, not a literal in
-# the coordinator, so re-adding smart meters is a config_flow/const change,
-# not a coordinator rewrite.
-DEFAULT_ENDPOINT = "mechanicalmonthly"
+# Config entry options.
+CONF_WASTEWATER_RATIO: Final = "wastewater_ratio"
+CONF_TARIFF_OVERRIDES: Final = "tariff_overrides"
+CONF_WATER_RATE: Final = "water_rate"
+CONF_WASTEWATER_RATE: Final = "wastewater_rate"
+CONF_FIXED_CHARGE: Final = "fixed_charge"
 
-# Available API endpoints. Only "mechanicalmonthly" is currently selectable
-# (config_flow.py no longer exposes a data-source choice) and only it is
-# processed by the coordinator. The others document what Watercare's API
-# offers for when smart-meter support is re-added.
-ENDPOINT_OPTIONS = {
-    "mechanicalmonthly": "Monthly Billing Periods (Non-Smart Meters)",
-    "dailywithstats": "Daily Usage with Statistics (Smart Meters)",
-    "monthly": "Monthly Usage (Smart Meters)",
-    "halfhourly": "Half-hourly Usage (Smart Meters)",
-}
+# Residential wastewater volume is 78.5% of metered water (Watercare's
+# published standard; apartments are typically 95%).
+DEFAULT_WASTEWATER_RATIO: Final = 0.785
 
-# Endpoint display names for statistics. Retained for smart-meter re-add;
-# unused while only mechanicalmonthly (handled without this lookup) runs.
-ENDPOINT_DISPLAY_NAMES = {
-    "mechanicalmonthly": "Water",
-    "dailywithstats": "Daily",
-    "monthly": "Monthly",
-    "halfhourly": "Half-hourly",
-}
+# Options written by 1.4.x and earlier (one flat tariff for all history).
+LEGACY_CONSUMPTION_RATE: Final = "consumption_rate"
+LEGACY_WASTEWATER_RATE: Final = "wastewater_rate"
+LEGACY_ANNUAL_LINE_CHARGE: Final = "annual_line_charge"
+LEGACY_ENDPOINT: Final = "endpoint"
+LEGACY_EMAIL: Final = "email"
 
-# Statistic type names. Retained for smart-meter re-add; unused while only
-# mechanicalmonthly (handled without this lookup) runs.
-STATISTIC_TYPES = {
-    "consumption": "Consumption",
-    "cost": "Cost",
-    "consumption_cost": "Consumption Cost",
-    "wastewater_cost": "Wastewater Cost",
-}
+# External statistics. These ids are unchanged since 1.2.x so the Energy
+# dashboard keeps its configuration across the upgrade.
+STAT_CONSUMPTION: Final = f"{DOMAIN}:water_consumption"
+STAT_TOTAL_COST: Final = f"{DOMAIN}:water_cost"
+STAT_CONSUMPTION_COST: Final = f"{DOMAIN}:consumption_cost"
+STAT_WASTEWATER_COST: Final = f"{DOMAIN}:wastewater_cost"
+ALL_STATISTIC_IDS: Final = (
+    STAT_CONSUMPTION,
+    STAT_TOTAL_COST,
+    STAT_CONSUMPTION_COST,
+    STAT_WASTEWATER_COST,
+)
 
-PLATFORMS = [
-    Platform.SENSOR,
-]
+# Repair issues.
+ISSUE_TARIFF_MISSING: Final = "tariff_missing"
+ISSUE_REBUILD_SKIPPED: Final = "statistics_rebuild_skipped"
+
+DOCS_URL: Final = "https://github.com/lafro/ha-watercare"
+TARIFF_DOCS_URL: Final = f"{DOCS_URL}/blob/main/docs/tariffs.md"
+STATISTICS_DOCS_URL: Final = f"{DOCS_URL}/blob/main/docs/statistics.md"

@@ -1,0 +1,86 @@
+name: Compatibility
+
+# Weekly early warning: run the tests against the newest Home Assistant
+# release and the newest test harness (which may track a beta), unpinned.
+# A failure here means a coming Home Assistant release needs attention; it
+# never blocks a merge. A scheduled failure opens, or comments on, one
+# tracking issue.
+
+on:
+  schedule:
+    - cron: "41 18 * * 3"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: tests (${{ matrix.channel }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        channel: [stable, newest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.14"
+          enable-cache: false
+      - run: uv sync --all-groups --locked
+      - name: Install the newest stable Home Assistant
+        if: matrix.channel == 'stable'
+        run: |
+          version="$(curl -fsSL https://pypi.org/pypi/homeassistant/json | jq -r .info.version)"
+          echo "Home Assistant $version"
+          # Keep the locked test harness and force the newest stable release,
+          # the same way pyproject.toml overrides the harness's beta pin.
+          echo "homeassistant==$version" > "$RUNNER_TEMP/overrides.txt"
+          uv pip install --no-config --overrides "$RUNNER_TEMP/overrides.txt" \
+            "homeassistant==$version"
+      - name: Install the newest test harness
+        if: matrix.channel == 'newest'
+        # --no-config: ignore pyproject's override so the harness's own
+        # Home Assistant pin (often the next beta) is installed.
+        run: uv pip install --no-config --upgrade pytest-homeassistant-custom-component
+      - run: uv pip list | grep -Ei '^(homeassistant|pytest-homeassistant-custom-component) '
+      # The lock-file check compares the locked Home Assistant with the
+      # locked harness, which this job replaces on purpose.
+      - run: >-
+          uv run --no-sync pytest -p no:cacheprovider
+          --deselect tests/test_repository_contracts.py::test_home_assistant_under_test_matches_the_harness
+
+  report:
+    needs: tests
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update the tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Compatibility check failing against the newest Home Assistant"
+          number="$(
+            gh issue list --state open --search "in:title \"$title\"" \
+              --json number,title \
+              --jq "map(select(.title == \"$title\")) | .[0].number // empty"
+          )"
+          body="The weekly compatibility run failed: $RUN_URL"
+          if [[ -n "$number" ]]; then
+            gh issue comment "$number" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi
