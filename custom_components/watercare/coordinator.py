@@ -209,8 +209,8 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
         cancellation can only take effect while it waits for the recorder or
         reads from it, never between the rebuild's clear and import. One that
         lands after the rebuild is queued and before it is recorded as done
-        leaves the rebuild to run, and the next update rebuilds again, to the
-        same rows.
+        leaves the queued rebuild to the recorder, and the next update
+        rebuilds again, to the same rows.
         """
         while (periods := self._statistics_periods) is not None:
             self._statistics_periods = None
@@ -266,12 +266,14 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
             result = async_rebuild(
                 self.hass, periods, self.schedule, self.wastewater_ratio
             )
-            # Queued is not written: at shutdown the recorder drops whatever is
-            # still in its queue (Recorder._async_close), though it finishes a
-            # task it has already taken off. Record the rebuild as done only
-            # once the recorder has taken all of it; otherwise a restart in
-            # between could keep the 1.4.x rows under a marker that says they
-            # were rebuilt.
+            # Queued is not written. At shutdown the recorder works through its
+            # queue at the final-write stage. If that stage times out,
+            # Recorder._async_close drops what is left, and that can even
+            # separate the clear from the import. Record the rebuild as done
+            # only once the recorder has taken all of it. Until then the
+            # marker is unset, so whatever a shutdown drops, the next start
+            # rebuilds. Recorded earlier, it could say the statistics were
+            # rebuilt while they still hold the 1.4.x rows, or nothing.
             await async_wait_for_queue(self.hass)
             self.statistics_status = "rebuilt"
 

@@ -637,12 +637,16 @@ def async_rebuild(
     The rows are worked out first. Then the clear
     (``Recorder.async_clear_statistics``) and the imports are queued on the
     recorder back to back, in this one call, which never yields to the event
-    loop: the recorder runs them in that order, and no cancellation, timeout
-    or shutdown can fall between them. Nothing here waits for the recorder;
-    1.5.0 waited for the clear inside setup, and the recorder does not work
-    through its queue until Home Assistant has started. The coordinator
-    waits for the queue afterwards, in the background, before it records the
-    rebuild as done.
+    loop: the imports are queued straight behind the clear, and no
+    cancellation can fall between them. A shutdown can: if its final-write
+    stage times out while the recorder runs the clear,
+    ``Recorder._async_close`` drops the imports still queued. The marker is
+    unset then, so the next start rebuilds.
+
+    Nothing here waits for the recorder; 1.5.0 waited for the clear inside
+    setup, and the recorder does not work through its queue until Home
+    Assistant has started. The coordinator waits for the queue afterwards, in
+    the background, before it records the rebuild as done.
     """
     plan = _plan(
         periods=periods,

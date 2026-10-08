@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import queue
 import threading
 from collections.abc import Iterator
 from datetime import date
@@ -25,7 +26,7 @@ from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from homeassistant.components.recorder import Recorder
+from homeassistant.components.recorder import Recorder, get_instance
 from homeassistant.components.recorder.statistics import get_last_statistics
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
@@ -323,12 +324,14 @@ async def test_a_poll_that_finishes_after_unload_starts_no_statistics_update(
 async def test_the_rebuild_is_recorded_as_done_only_once_the_recorder_has_it(
     ha: HomeAssistant, mock_api: dict[str, AsyncMock]
 ) -> None:
-    """Queued is not written: shutdown drops what is still queued.
+    """Queued is not written, so the marker waits for the recorder.
 
-    ``Recorder._async_close`` empties the queue at shutdown. So
+    At shutdown the recorder works through its queue at the final-write
+    stage. If that stage times out, ``Recorder._async_close`` drops what is
+    left, and that can even separate the clear from the import. So
     ``statistics_version`` is recorded only once the recorder has taken the
     rebuild's clear and import off its queue; a restart before then leaves
-    the marker unset and rebuilds again.
+    the marker unset, and the next start rebuilds (the next test).
     """
     await add_legacy_statistics(ha)
     entry = make_entry(statistics_version=None)
@@ -362,6 +365,75 @@ async def test_the_rebuild_is_recorded_as_done_only_once_the_recorder_has_it(
         await ha.async_block_till_done(wait_background_tasks=True)
 
     assert len(releases) == 1
+    assert entry.data["statistics_version"] == 2
+    assert entry.runtime_data.statistics_status == "rebuilt"
+    assert await _row_counts(ha) == dict.fromkeys(ALL_STATISTIC_IDS, REBUILT_ROWS)
+
+
+@pytest.mark.parametrize(
+    ("clear_written", "rows_left"),
+    [(False, LEGACY_ROWS), (True, 0)],
+    ids=["whole_rebuild_dropped", "imports_dropped_after_the_clear"],
+)
+async def test_a_rebuild_dropped_at_shutdown_runs_again_on_the_next_start(
+    ha: HomeAssistant,
+    mock_api: dict[str, AsyncMock],
+    clear_written: bool,
+    rows_left: int,
+) -> None:
+    """A shutdown can drop the queued rebuild, even between clear and import.
+
+    At shutdown the recorder works through its queue at the final-write
+    stage. If that stage times out, ``Recorder._async_close`` drops what is
+    left. If the recorder is running the clear by then, the imports behind it
+    are dropped and the four statistics stay empty across the restart. The
+    marker is unset either way, so the next start finds the history it can
+    recreate and rebuilds.
+    """
+    await add_legacy_statistics(ha)
+    entry = make_entry(statistics_version=None)
+    entry.add_to_hass(ha)
+    clear = Recorder.async_clear_statistics
+    queued = asyncio.Event()
+    holds: list[tuple[asyncio.Event, threading.Event]] = []
+
+    def _hold_at_the_clear(self: Recorder, *args: Any, **kwargs: Any) -> None:
+        # Hold the recorder thread in front of the clear, or between the
+        # clear and the imports, which are queued straight after it.
+        if not clear_written:
+            holds.append(hold_recorder(ha))
+        clear(self, *args, **kwargs)
+        if clear_written:
+            holds.append(hold_recorder(ha))
+        queued.set()
+
+    with patch.object(Recorder, "async_clear_statistics", _hold_at_the_clear):
+        try:
+            await _set_up_promptly(ha, entry)
+            async with asyncio.timeout(PROMPTLY):
+                await queued.wait()
+                await holds[0][0].wait()
+            # Stopping Home Assistant cancels the update before the final
+            # write, as unloading the entry does.
+            assert await ha.config_entries.async_unload(entry.entry_id)
+            assert "statistics_version" not in entry.data
+            # The final-write stage timed out: Recorder._async_close drops
+            # whatever is still queued, here the imports and perhaps the clear.
+            recorder = get_instance(ha)
+            with contextlib.suppress(queue.Empty):
+                while True:
+                    recorder._queue.get_nowait()
+        finally:
+            for _, release in holds:
+                release.set()
+        await ha.async_block_till_done(wait_background_tasks=True)
+
+    assert "statistics_version" not in entry.data
+    assert await _row_counts(ha) == dict.fromkeys(ALL_STATISTIC_IDS, rows_left)
+
+    # The next start rebuilds.
+    assert await ha.config_entries.async_setup(entry.entry_id)
+    await ha.async_block_till_done(wait_background_tasks=True)
     assert entry.data["statistics_version"] == 2
     assert entry.runtime_data.statistics_status == "rebuilt"
     assert await _row_counts(ha) == dict.fromkeys(ALL_STATISTIC_IDS, REBUILT_ROWS)

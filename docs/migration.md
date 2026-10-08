@@ -52,7 +52,7 @@ To fix it, reload Watercare (**⋮ → Reload**), or update to 1.5.1 and restart
 
 If the 1.5.0 rebuild finished (daily water bars, `statistics_version: 2`), there is nothing to do: 1.5.1 does not rebuild again.
 
-1.5.1 never touches the statistics during setup. It loads straight away and updates the statistics in the background once Home Assistant has started, and it queues the clear and the import together, so they cannot be split ([statistics.md](statistics.md#start-up-and-the-recorder)).
+1.5.1 never touches the statistics during setup. It loads straight away and updates the statistics in the background once Home Assistant has started, and it queues the clear and the import together, so a cancelled setup or a reload cannot split them. It records the rebuild as done only once the database has taken both, so if a restart interrupts the rebuild anyway, the next start runs it again ([statistics.md](statistics.md#start-up-and-the-recorder)).
 
 ## Checking the result
 

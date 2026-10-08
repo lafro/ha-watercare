@@ -13,7 +13,7 @@ On the first start after upgrading from 1.4.x, 1.5.0 rebuilt the water statistic
 ### What changes
 
 - Setup no longer touches the statistics. The integration loads straight away, and the statistics, including the one-off rebuild, are updated in the background once Home Assistant has started. This covers every poll: a normal poll also read the stored statistics during setup, so a slow database could delay start-up too.
-- The clear and the import are handed to the database together, so a timeout, a reload or a restart can no longer leave the statistics cleared and empty. The rebuild only counts as done once the database has taken both, so a restart before then runs it again.
+- The clear and the import are handed to the database together, so a cancelled setup or a reload can no longer leave the statistics cleared and empty. The rebuild only counts as done once the database has taken both, so a restart before then runs it again, even one where Home Assistant shuts down before the database has written all of it.
 - If a statistics update fails, the integration stays loaded and the next poll tries again. Before, the whole integration failed to set up.
 
 ### What you need to do
