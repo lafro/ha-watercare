@@ -35,6 +35,7 @@ The hooks match on tool names, so they work on any surface, but the guard has on
 - `.claude/hooks/guard.py` must stay runnable on Python 3.9 with the standard library only (ruff checks it with a py39 target; a test parses it with the 3.9 grammar).
 - Branches `<type>/<slug>`, squash-merge PRs into `main`; all GitHub Actions pinned to full commit SHAs, and every checkout sets `persist-credentials: false`.
 - Upstream guidance for HA integrations: `home-assistant/core/.claude/skills` (adapt paths to `custom_components/`).
+- Question inherited behaviour. Code carried over from 1.4.1 or the original project is not right just because it exists: check it against Home Assistant's current guidance, the documented API behaviour or a test before keeping it. Prefer a test or a read-only probe to argument, and write the reasoning in `docs/` or the PR, not only the outcome.
 
 ## Facts that are easy to get wrong
 
