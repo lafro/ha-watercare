@@ -28,6 +28,7 @@ from . import WatercareConfigEntry
 from .const import DOMAIN
 from .coordinator import WatercareCoordinator, WatercareData
 from .models import parse_timestamp
+from .statistics import pricing_date
 from .tariffs import financial_year, financial_year_label
 
 PARALLEL_UPDATES = 0
@@ -70,7 +71,7 @@ def _usage_attributes(data: WatercareData) -> dict[str, Any]:
         "wastewater_rate_per_1000L": _round_rate(tariff.wastewater_rate)
         if tariff
         else None,
-        "tariff_year": financial_year_label(financial_year(period.end)),
+        "tariff_year": financial_year_label(financial_year(pricing_date(period))),
         "cost_currency": "NZD",
         "account_balance": account.account_balance if account else None,
         "amount_due": account.amount_due if account else None,

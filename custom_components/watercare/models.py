@@ -8,7 +8,8 @@ into logs or diagnostics by accident.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Any
 
@@ -40,7 +41,7 @@ def local_date(value: datetime) -> date:
     """Return the Auckland calendar date of an instant.
 
     Watercare serialises billing dates as Auckland midnight in UTC, so
-    "2026-07-15T12:00:00.000Z" is 16 July in Auckland.
+    "2026-07-02T12:00:00.000Z" is 3 July in Auckland.
     """
     return value.astimezone(NZ_TIMEZONE).date()
 
@@ -55,8 +56,11 @@ class BillingPeriod:
     number_of_days: int
     reading_type: str | None
     daily_average: float | None
-    efficiency_band: Any
-    usage_to_lower_band: Any
+    # Cosmetic values passed through from the payload as they are. They take
+    # no part in equality or hashing, so an unexpected shape (a list, say)
+    # can never break code that keys on a period.
+    efficiency_band: Any = field(compare=False)
+    usage_to_lower_band: Any = field(compare=False)
     raw_from: str
     raw_to: str
 
@@ -80,7 +84,7 @@ class BillingPeriod:
         statistics = _mapping(item.get("statistics"))
         number_of_days = _optional_number(statistics.get("numberOfDays"))
         if number_of_days is None or number_of_days < 1:
-            # Watercare counts both ends of the period (16 Jun to 16 Jul is
+            # Watercare counts both ends of the period (3 Jun to 3 Jul is
             # 31 days), so the fallback does too.
             number_of_days = (end - start).days + 1
         efficiency = _mapping(statistics.get("efficiency"))
@@ -201,6 +205,12 @@ def _optional_str(value: Any) -> str | None:
 
 
 def _optional_number(value: Any) -> float | None:
+    """Return a finite number, or None.
+
+    The JSON decoder accepts NaN and Infinity, which would otherwise break
+    the integer conversions above.
+    """
     if isinstance(value, bool) or not isinstance(value, int | float):
         return None
-    return float(value)
+    number = float(value)
+    return number if math.isfinite(number) else None

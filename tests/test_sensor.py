@@ -60,8 +60,8 @@ async def test_usage_sensor_attributes_and_values(
 
     usage = ha.states.get("sensor.watercare_last_bill_usage")
     assert usage is not None
-    assert usage.state == "11000"
-    assert usage.attributes["billing_period_usage"] == 11000
+    assert usage.state == "13000"
+    assert usage.attributes["billing_period_usage"] == 13000
     assert usage.attributes["reading_type"] == "E"
     assert usage.attributes["tariff_year"] == "2026/27"
     assert usage.attributes["consumption_rate_per_1000L"] == 2.46
@@ -69,11 +69,11 @@ async def test_usage_sensor_attributes_and_values(
     assert "meter_number" not in usage.attributes
     assert "state_class" not in usage.attributes
     assert ha.states.get("sensor.watercare_reading_type").state == "Estimate"
-    # 11 kL over 30 days at 2026/27 prices:
-    # 11 x 2.46 + 11 x 0.785 x 4.28 + 355.90 / 365 x 30 = 93.27
-    assert ha.states.get("sensor.watercare_last_bill_cost").state == "93.27"
+    # 13 kL over 30 days at 2026/27 prices:
+    # 13 x 2.46 + 13 x 0.785 x 4.28 + 355.90 / 365 x 30 = 104.91
+    assert ha.states.get("sensor.watercare_last_bill_cost").state == "104.91"
     assert ha.states.get("sensor.watercare_payment_due").state == (
-        "2026-10-06T23:59:59+00:00"
+        "2026-09-25T23:59:59+00:00"
     )
     # Disabled by default.
     assert ha.states.get("sensor.watercare_overdue_amount") is None
@@ -81,7 +81,7 @@ async def test_usage_sensor_attributes_and_values(
 
 def test_values_without_an_account_or_cost() -> None:
     period = BillingPeriod.from_json(
-        api_period(date(2026, 8, 17), date(2026, 9, 15), 11000, reading="X")
+        api_period(date(2026, 8, 4), date(2026, 9, 2), 13000, reading="X")
     )
     assert period is not None
 

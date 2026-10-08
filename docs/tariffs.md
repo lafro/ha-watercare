@@ -1,6 +1,6 @@
 # Watercare residential prices by financial year
 
-The integration prices each day of water use with the prices in force on that day. This page lists the prices it carries and where each one comes from. The table in code is `PUBLISHED_TARIFFS` in [`custom_components/watercare/tariffs.py`](../custom_components/watercare/tariffs.py); a test checks it against the spot values below.
+The integration prices each bill with the prices in force when its billing period started, as Watercare does, and spreads that cost over the bill's days. This page lists the prices it carries and where each one comes from. The table in code is `PUBLISHED_TARIFFS` in [`custom_components/watercare/tariffs.py`](../custom_components/watercare/tariffs.py); a test checks it against the spot values below.
 
 Watercare's financial year runs from 1 July to 30 June, and prices change on 1 July. All figures are **GST-inclusive** residential prices for customers with a water meter in the Metropolitan network, as printed on bills and in Watercare's annual price schedules.
 
@@ -32,27 +32,28 @@ Retrieved 8 October 2026. The SHA-256 prefix identifies the exact file that was 
 8. Watercare, *Residential water services and wastewater charges and IGC 2025–2026*. <https://assets.watercare.co.nz/media/residential_other_charges_2025_2026_pdf_cf73059f20.pdf> (`638ee97fee353919…`).
 9. Watercare, *Residential water services and wastewater charges and IGC 2026–2027* (prices effective 1 July 2026). <https://assets.watercare.co.nz/media/Residential_Water_Ww_IGC_Charges_Other_Charges_2026_2027_rev_0aa42cb042.pdf> (`cabc6ae20d929e72…`).
 
-## How a day is priced
+## How a bill is priced
 
-For each Auckland calendar day:
+Watercare charges a whole bill at the prices in force when its billing period **starts**. A bill that runs from June into July is charged entirely at the earlier financial year's prices, and the new prices apply from the first bill that starts on or after 1 July. This was checked against a real bill whose period spanned 1 July 2026: pricing the whole bill at 2025/26 prices reproduced its total to the cent, while splitting it by day between 2025/26 and 2026/27 prices overstated it by about 3.7%, several dollars on one bill. Only that one bill has been checked; if a bill spanning 1 July shows otherwise, please open an issue. The rule is one function, `pricing_date` in [`statistics.py`](../custom_components/watercare/statistics.py).
+
+For each bill, at its start date's prices:
 
 - water cost = litres ÷ 1,000 × water price;
 - wastewater cost = litres ÷ 1,000 × wastewater ratio × wastewater price;
-- fixed charge = yearly fixed charge ÷ 365 × the billing days that row stands for (one, unless Watercare's day count for the bill differs from the days it is spread over).
+- fixed charge = yearly fixed charge ÷ 365 × Watercare's day count for the bill.
 
-A bill is the sum of its days, so a bill that spans 1 July is priced partly at each year's prices.
+Each day of the bill gets an equal share of the bill's litres and fixed-charge days, priced the same way, so the daily rows add up to the bill.
 
 Assumptions to know about:
 
 - **Daily fixed charge.** Watercare invoices the fixed charge "at a daily rate". The integration divides the yearly charge by 365 in every year, including leap years.
-- **Bills spanning 1 July.** The even per-day split is an approximation of Watercare's own apportionment; expect differences of a few cents on those bills.
 - **Rounding.** Watercare rounds each bill line to the cent; the statistics keep unrounded daily values.
 
 ## Checking against a bill
 
-Pick a bill that sits entirely inside one financial year. Its total should equal water + wastewater + fixed charge as above, using that year's row. For example, 14 kL over a 32-day period in 2025/26 gives 14 × 2.296 + 14 × 0.785 × 3.994 + 332 ÷ 365 × 32 = NZD 105.14.
+A bill's total should equal water + wastewater + fixed charge as above, using the row for the financial year in which the bill **starts**. For example, a made-up bill of 12 kL over a 30-day period starting in August 2025 (2025/26) gives 12 × 2.296 + 12 × 0.785 × 3.994 + 332 ÷ 365 × 30 = NZD 92.46.
 
-Releases up to 1.4.1 defaulted to 2.296 / 3.994 / 332, the **2025/26** prices, and priced every past bill with them. From 1.5.0 each bill uses its own year's prices, so pre-2025 costs come out lower and bills from 1 July 2026 higher than 1.4.x showed.
+Releases up to 1.4.1 defaulted to 2.296 / 3.994 / 332 and labelled them as the 2026/27 prices, because they matched a bill issued in July 2026. They are the **2025/26** prices: that bill's period began in June, so Watercare charged it at 2025/26 prices. 1.4.x priced every past bill with them. From 1.5.0 each bill uses the prices of the year it starts in, so bills that start before 1 July 2025 come out lower, and bills that start on or after 1 July 2026 higher, than 1.4.x showed.
 
 ## Adding a new year
 
@@ -62,4 +63,4 @@ Each July, after Watercare publishes the new schedule:
 2. Update `test_published_values_match_the_cited_schedules`.
 3. Release a new version. Installs that already entered the year's prices in the options keep their entry; matching figures can be removed from the options.
 
-Until a release includes the new year, users see a repair notice and can enter the prices themselves; cost statistics pause from 1 July in the meantime.
+Until a release includes the new year, users see a repair notice and can enter the prices themselves; cost statistics pause from the first bill that starts on or after 1 July in the meantime. Prices entered or released later apply only to days not yet recorded. That is why the options and the repair form leave a year's price fields empty until its prices are known: a guess saved by accident would resume the cost statistics and stay in them.

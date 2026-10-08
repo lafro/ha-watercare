@@ -6,7 +6,7 @@
 - [uv](https://docs.astral.sh/uv/)
 - A disposable Home Assistant instance for manual testing
 
-Never use real credentials in automated tests and never commit captured Watercare responses. Fixtures must be synthetic: no real account or meter numbers, names, addresses, tokens, balances or usage. `tests/test_repository_contracts.py` rejects anything shaped like a Watercare account number except the synthetic ones.
+Never use real credentials in automated tests and never commit captured Watercare responses. Fixtures, examples and docs must be synthetic: no real account or meter numbers, names, emails, addresses, tokens, balances, usage or costs, and no figures or dates copied from a real bill (made-up bills here fall on the 3rd and 4th of the month). `tests/test_repository_contracts.py` rejects anything shaped like a Watercare account number or meter id except the synthetic ones, and email addresses outside the example domains; it cannot recognise a real usage figure, so check those yourself.
 
 ## Setup and checks
 
@@ -17,6 +17,8 @@ uv run ruff check .
 uv run mypy custom_components/watercare
 uv run pytest
 uv run python scripts/check_module_coverage.py
+gitleaks git --log-opts="origin/main..HEAD"   # before every push
+gitleaks dir .
 ```
 
 Keep tool caches out of the repository (uv uses its global cache by default). Hassfest and HACS validation run in GitHub Actions.

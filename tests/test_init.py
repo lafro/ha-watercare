@@ -2,17 +2,23 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime
+from decimal import Decimal
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from freezegun.api import FrozenDateTimeFactory
+from homeassistant.components.recorder import Recorder, get_instance
 from homeassistant.components.recorder.models import StatisticMeanType
-from homeassistant.components.recorder.statistics import async_add_external_statistics
+from homeassistant.components.recorder.statistics import (
+    async_add_external_statistics,
+    statistics_during_period,
+)
 from homeassistant.config_entries import SOURCE_REAUTH, ConfigEntryState
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.components.recorder.common import (
@@ -23,9 +29,19 @@ from custom_components.watercare import async_migrate_entry
 from custom_components.watercare.api import (
     WatercareAuthError,
     WatercareConnectionError,
+    _default_sign_in_session,
 )
-from custom_components.watercare.const import DOMAIN, STAT_CONSUMPTION
-from custom_components.watercare.statistics import day_start
+from custom_components.watercare.const import (
+    ALL_STATISTIC_IDS,
+    DOMAIN,
+    STAT_CONSUMPTION,
+    STAT_CONSUMPTION_COST,
+    STAT_TOTAL_COST,
+    STAT_WASTEWATER_COST,
+)
+from custom_components.watercare.models import parse_billing_periods
+from custom_components.watercare.statistics import bill_cost, day_start
+from custom_components.watercare.tariffs import PUBLISHED_TARIFFS, TariffSchedule
 
 from .common import (
     ACCOUNT_NUMBER,
@@ -51,7 +67,9 @@ async def test_setup_and_unload(
 
     assert entry.state is ConfigEntryState.LOADED
     assert entry.runtime_data.data.period_count == 3
-    assert ha.states.get("sensor.watercare_last_bill_usage").state == "11000"
+    # Sign-in sessions come from Home Assistant's helper (session.py).
+    assert entry.runtime_data.api._sign_in_session is not _default_sign_in_session
+    assert ha.states.get("sensor.watercare_last_bill_usage").state == "13000"
 
     assert await ha.config_entries.async_unload(entry.entry_id)
     assert entry.state is ConfigEntryState.NOT_LOADED
@@ -192,7 +210,7 @@ async def _add_legacy_consumption(hass: HomeAssistant, *days: date) -> None:
 async def test_first_run_rebuilds_legacy_statistics(
     ha: HomeAssistant, mock_api: dict[str, AsyncMock]
 ) -> None:
-    await _add_legacy_consumption(ha, date(2026, 7, 16), date(2026, 8, 16))
+    await _add_legacy_consumption(ha, date(2026, 7, 3), date(2026, 8, 3))
     entry = make_entry(statistics_version=None)
     await _setup(ha, entry)
 
@@ -211,7 +229,7 @@ async def test_first_run_rebuilds_legacy_statistics(
 async def test_rebuild_is_skipped_when_it_would_lose_history(
     ha: HomeAssistant, mock_api: dict[str, AsyncMock]
 ) -> None:
-    await _add_legacy_consumption(ha, date(2019, 12, 13), date(2026, 8, 16))
+    await _add_legacy_consumption(ha, date(2019, 12, 13), date(2026, 8, 3))
     entry = make_entry(statistics_version=None)
     await _setup(ha, entry)
 
@@ -231,9 +249,9 @@ async def test_tariff_issue_is_raised_and_cleared(
     mock_api: dict[str, AsyncMock],
     freezer: FrozenDateTimeFactory,
 ) -> None:
-    freezer.move_to("2027-07-02T12:00:00+12:00")
+    freezer.move_to("2027-08-10T12:00:00+12:00")
     mock_api["periods"].return_value = [
-        api_period(date(2027, 6, 16), date(2027, 7, 1), 5000),
+        api_period(date(2027, 7, 4), date(2027, 8, 3), 5000),
         *default_periods(),
     ]
     entry = make_entry()
@@ -248,7 +266,8 @@ async def test_tariff_issue_is_raised_and_cleared(
     assert issue.data == {"entry_id": entry.entry_id, "financial_year": 2027}
     assert coordinator.data.missing_tariff_year == 2027
     assert coordinator.data.latest_cost is None
-    assert coordinator.data.import_result.first_day_without_tariff == date(2027, 7, 1)
+    assert coordinator.data.import_result.first_day_without_tariff == date(2027, 7, 4)
+    assert coordinator.data.import_result.missing_tariff_year == 2027
     assert ha.states.get("sensor.watercare_last_bill_cost").state == "unknown"
 
     ha.config_entries.async_update_entry(
@@ -348,7 +367,7 @@ async def test_tariff_issue_names_the_earliest_unpriced_year(
     # A year was skipped: 2028/29 prices are known, 2027/28 are not.
     freezer.move_to("2028-08-02T12:00:00+12:00")
     mock_api["periods"].return_value = [
-        api_period(date(2027, 6, 16), date(2027, 7, 16), 5000),
+        api_period(date(2027, 7, 4), date(2027, 8, 3), 5000),
         *default_periods(),
     ]
     entry = make_entry(
@@ -381,3 +400,226 @@ async def test_removing_the_entry_removes_its_issues(
     await ha.config_entries.async_remove(entry.entry_id)
 
     assert issues.async_get_issue(DOMAIN, f"tariff_missing_{entry.entry_id}") is None
+
+
+async def test_bill_spanning_1_july_keeps_its_cost_while_the_new_year_is_unknown(
+    ha: HomeAssistant,
+    mock_api: dict[str, AsyncMock],
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    # The latest bill started in June 2027, so 2026/27 prices apply to all of
+    # it; only the current year's prices are missing.
+    freezer.move_to("2027-07-10T12:00:00+12:00")
+    mock_api["periods"].return_value = [
+        api_period(date(2027, 6, 4), date(2027, 7, 3), 5000),
+        *default_periods(),
+    ]
+    entry = make_entry()
+    await _setup(ha, entry)
+
+    data = entry.runtime_data.data
+    assert data.import_result.first_day_without_tariff is None
+    assert data.latest_cost is not None
+    assert data.latest_tariff == PUBLISHED_TARIFFS[2026]
+    assert data.missing_tariff_year == 2027
+    usage = ha.states.get("sensor.watercare_last_bill_usage")
+    assert usage is not None
+    assert usage.attributes["tariff_year"] == "2026/27"
+
+
+def _legacy_metadata(statistic_id: str, name: str, unit: str) -> Any:
+    return {
+        "has_sum": True,
+        "mean_type": StatisticMeanType.NONE,
+        "name": name,
+        "source": DOMAIN,
+        "statistic_id": statistic_id,
+        "unit_class": "volume" if unit == "L" else None,
+        "unit_of_measurement": unit,
+    }
+
+
+async def _add_legacy_statistics(hass: HomeAssistant) -> None:
+    """Store all four statistics the way 1.4.x did for the default bills.
+
+    One row per bill, at the Auckland midnight that starts its end date, every
+    bill priced at the one flat tariff from the 1.4.x options (2025/26).
+    """
+    flat = PUBLISHED_TARIFFS[2025]
+    ratio = Decimal("0.785")
+    bills = [(date(2026, 7, 3), 12, 31), (date(2026, 8, 3), 8, 31)]
+    bills.append((date(2026, 9, 2), 13, 30))
+    sums: dict[str, Decimal] = dict.fromkeys(ALL_STATISTIC_IDS, Decimal(0))
+    rows: dict[str, list[Any]] = {statistic_id: [] for statistic_id in sums}
+    for end, kilolitres, days in bills:
+        water = kilolitres * flat.water_rate
+        wastewater = kilolitres * ratio * flat.wastewater_rate
+        fixed = flat.fixed_charge / 365 * days
+        for statistic_id, amount in (
+            (STAT_CONSUMPTION, Decimal(kilolitres * 1000)),
+            (STAT_TOTAL_COST, water + wastewater + fixed),
+            (STAT_CONSUMPTION_COST, water),
+            (STAT_WASTEWATER_COST, wastewater),
+        ):
+            sums[statistic_id] += amount
+            rows[statistic_id].append(
+                {"start": day_start(end), "sum": float(sums[statistic_id])}
+            )
+    names = {
+        STAT_CONSUMPTION: ("Watercare Water Consumption", "L"),
+        STAT_TOTAL_COST: ("Watercare Total Cost", "NZD"),
+        STAT_CONSUMPTION_COST: ("Watercare Consumption Cost", "NZD"),
+        STAT_WASTEWATER_COST: ("Watercare Wastewater Cost", "NZD"),
+    }
+    for statistic_id, (name, unit) in names.items():
+        async_add_external_statistics(
+            hass, _legacy_metadata(statistic_id, name, unit), rows[statistic_id]
+        )
+    await async_wait_recording_done(hass)
+
+
+async def _stored(hass: HomeAssistant, statistic_id: str) -> list[dict[str, Any]]:
+    await async_wait_recording_done(hass)
+    result = await get_instance(hass).async_add_executor_job(
+        statistics_during_period,
+        hass,
+        datetime(2000, 1, 1, tzinfo=UTC),
+        None,
+        {statistic_id},
+        "hour",
+        None,
+        {"state", "sum"},
+    )
+    return list(result.get(statistic_id, []))
+
+
+def _legacy_entry() -> Any:
+    """A config entry exactly as 1.4.x left it (version 1.1, flat prices)."""
+    return make_entry(
+        minor_version=1,
+        statistics_version=None,
+        unique_id=None,
+        data={"email": EMAIL, CONF_PASSWORD: PASSWORD},
+        options={
+            "endpoint": "mechanicalmonthly",
+            "consumption_rate": 2.296,
+            "wastewater_rate": 3.994,
+            "wastewater_ratio": 0.785,
+            "annual_line_charge": 332,
+        },
+    )
+
+
+async def test_upgrade_from_1_4_x_end_to_end(
+    ha: HomeAssistant, mock_api: dict[str, AsyncMock]
+) -> None:
+    await _add_legacy_statistics(ha)
+    assert len(await _stored(ha, STAT_TOTAL_COST)) == 3
+    entry = _legacy_entry()
+
+    await _setup(ha, entry)
+
+    # Config entry migration.
+    assert entry.state is ConfigEntryState.LOADED
+    assert entry.minor_version == 2
+    assert entry.unique_id == ACCOUNT_NUMBER
+    assert entry.options == {"wastewater_ratio": 0.785}
+    assert entry.data[CONF_USERNAME] == EMAIL
+    assert entry.data["statistics_version"] == 2
+    coordinator = entry.runtime_data
+    assert coordinator.statistics_status == "rebuilt"
+
+    # The legacy rows are gone and every statistic holds one row per day.
+    periods = parse_billing_periods(default_periods()).periods
+    costs = [
+        bill_cost(p, periods, TariffSchedule({}), Decimal("0.785")) for p in periods
+    ]
+    assert all(cost is not None for cost in costs)
+    expected = {
+        STAT_CONSUMPTION: 33000.0,
+        STAT_TOTAL_COST: float(sum(cost.total for cost in costs if cost)),
+        STAT_CONSUMPTION_COST: float(sum(cost.water for cost in costs if cost)),
+        STAT_WASTEWATER_COST: float(sum(cost.wastewater for cost in costs if cost)),
+    }
+    for statistic_id, final_sum in expected.items():
+        rows = await _stored(ha, statistic_id)
+        assert len(rows) == 92, statistic_id
+        assert datetime.fromtimestamp(rows[0]["start"], tz=UTC) == day_start(
+            date(2026, 6, 3)
+        )
+        assert rows[-1]["sum"] == pytest.approx(final_sum), statistic_id
+    # The June bill spans 1 July and keeps its 2025/26 price; the later bills
+    # now cost more than the flat 1.4.x price gave them.
+    assert costs[0] is not None
+    assert round(costs[0].total, 2) == Decimal("93.37")
+    assert expected[STAT_TOTAL_COST] == pytest.approx(93.3727 + 76.7855 + 104.9095)
+
+    # The next poll adds nothing and keeps the rebuilt rows.
+    await coordinator.async_refresh()
+    assert coordinator.data.import_result.consumption_rows == 0
+    assert len(await _stored(ha, STAT_TOTAL_COST)) == 92
+
+
+async def test_rebuild_retries_after_the_clear_times_out(
+    ha: HomeAssistant, mock_api: dict[str, AsyncMock]
+) -> None:
+    await _add_legacy_statistics(ha)
+    entry = make_entry(statistics_version=None)
+
+    # The recorder never confirms the clear.
+    with (
+        patch.object(Recorder, "async_clear_statistics"),
+        patch("custom_components.watercare.statistics._CLEAR_TIMEOUT", 0.01),
+    ):
+        await _setup(ha, entry)
+
+    assert entry.state is ConfigEntryState.SETUP_RETRY
+    assert "statistics_version" not in entry.data
+    # Nothing was imported: the legacy rows are still there.
+    assert len(await _stored(ha, STAT_CONSUMPTION)) == 3
+
+    await ha.config_entries.async_reload(entry.entry_id)
+    await ha.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.LOADED
+    assert entry.runtime_data.statistics_status == "rebuilt"
+    assert entry.data["statistics_version"] == 2
+    assert len(await _stored(ha, STAT_CONSUMPTION)) == 92
+
+
+async def test_rebuild_retries_after_the_import_fails(
+    ha: HomeAssistant, mock_api: dict[str, AsyncMock]
+) -> None:
+    await _add_legacy_statistics(ha)
+    entry = make_entry(statistics_version=None)
+    calls: list[str] = []
+
+    def _fail_on_the_cost_rows(hass: HomeAssistant, metadata: Any, rows: Any) -> None:
+        calls.append(metadata["statistic_id"])
+        if len(calls) > 1:
+            raise HomeAssistantError("import failed")
+        async_add_external_statistics(hass, metadata, rows)
+
+    # The clear completes, the consumption rows are queued, then the import
+    # of the first cost statistic fails.
+    with patch(
+        "custom_components.watercare.statistics.async_add_external_statistics",
+        side_effect=_fail_on_the_cost_rows,
+    ):
+        await _setup(ha, entry)
+
+    assert calls == [STAT_CONSUMPTION, STAT_TOTAL_COST]
+    assert entry.state is ConfigEntryState.SETUP_RETRY
+    assert "statistics_version" not in entry.data
+    assert len(await _stored(ha, STAT_CONSUMPTION)) == 92
+    assert await _stored(ha, STAT_TOTAL_COST) == []
+
+    await ha.config_entries.async_reload(entry.entry_id)
+    await ha.async_block_till_done()
+
+    # The partial import loses nothing, so the next attempt rebuilds in full.
+    assert entry.state is ConfigEntryState.LOADED
+    assert entry.runtime_data.statistics_status == "rebuilt"
+    assert entry.data["statistics_version"] == 2
+    for statistic_id in ALL_STATISTIC_IDS:
+        assert len(await _stored(ha, statistic_id)) == 92, statistic_id

@@ -96,6 +96,11 @@ async def async_get_config_entry_diagnostics(
                         if imported.first_day_without_tariff
                         else None
                     ),
+                    "missing_tariff_year": (
+                        financial_year_label(imported.missing_tariff_year)
+                        if imported.missing_tariff_year is not None
+                        else None
+                    ),
                 },
             }
         )

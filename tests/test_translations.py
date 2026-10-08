@@ -42,5 +42,16 @@ def test_every_translation_key_used_in_code_exists() -> None:
             strings["issues"]["tariff_missing"]["fix_flow"]["abort"]
         )
         assert reason in aborts, reason
+    errors = set(strings["config"]["error"]) | set(strings["options"]["error"])
     for error in re.findall(r'errors\["base"\] = "([a-z_]+)"', source):
-        assert error in strings["config"]["error"], error
+        assert error in errors, error
+
+
+def test_every_flow_step_has_strings() -> None:
+    strings = _strings()
+    source = (INTEGRATION / "config_flow.py").read_text()
+    steps = set(strings["config"]["step"]) | set(strings["options"]["step"])
+    for step in re.findall(r'step_id="([a-z_]+)"', source):
+        assert step in steps, step
+    new_year = strings["options"]["step"]["new_year"]
+    assert new_year["data"] == strings["options"]["step"]["init"]["data"]

@@ -16,6 +16,7 @@ from custom_components.watercare.api import (
     WatercareApi,
     WatercareAuthError,
     WatercareConnectionError,
+    _default_sign_in_session,
 )
 from custom_components.watercare.config_flow import (
     async_validate_login,
@@ -276,6 +277,76 @@ async def test_options_flow_prefills_and_stores_only_differences(
     }
 
 
+def _suggested(result: dict) -> dict[str, object]:
+    return {
+        str(key): (key.description or {}).get("suggested_value")
+        for key in result["data_schema"].schema
+    }
+
+
+async def test_options_flow_in_a_year_without_prices_starts_empty(
+    ha: HomeAssistant, mock_setup: AsyncMock, freezer: FrozenDateTimeFactory
+) -> None:
+    # 2027/28 is after the published table and the user has entered nothing.
+    freezer.move_to("2027-07-20T00:00:00+12:00")
+    entry = make_entry(options={"wastewater_ratio": 0.785})
+    entry.add_to_hass(ha)
+
+    result = await ha.config_entries.options.async_init(entry.entry_id)
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "new_year"
+    assert result["description_placeholders"] == {"financial_year": "2027/28"}
+    # Never last year's prices: an unchanged save must not store them.
+    assert _suggested(result) == {
+        "wastewater_ratio": 0.785,
+        "water_rate": None,
+        "wastewater_rate": None,
+        "fixed_charge": None,
+    }
+
+    # Saving with the prices left empty (here, a ratio change) stores none.
+    result = await ha.config_entries.options.async_configure(
+        result["flow_id"], {"wastewater_ratio": 0.95}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.options == {"wastewater_ratio": 0.95}
+
+
+async def test_options_flow_in_a_year_without_prices_needs_all_three(
+    ha: HomeAssistant, mock_setup: AsyncMock, freezer: FrozenDateTimeFactory
+) -> None:
+    freezer.move_to("2027-07-20T00:00:00+12:00")
+    entry = make_entry(options={"wastewater_ratio": 0.785})
+    entry.add_to_hass(ha)
+    result = await ha.config_entries.options.async_init(entry.entry_id)
+
+    partial = {"wastewater_ratio": 0.785, "water_rate": 2.6}
+    result = await ha.config_entries.options.async_configure(result["flow_id"], partial)
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "new_year"
+    assert result["errors"] == {"base": "incomplete_prices"}
+    assert _suggested(result)["water_rate"] == 2.6
+    assert entry.options == {"wastewater_ratio": 0.785}
+
+    prices = {"water_rate": 2.6, "wastewater_rate": 4.5, "fixed_charge": 380}
+    result = await ha.config_entries.options.async_configure(
+        result["flow_id"], {"wastewater_ratio": 0.785, **prices}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.options == {
+        "wastewater_ratio": 0.785,
+        "tariff_overrides": {
+            "2027": {"water_rate": 2.6, "wastewater_rate": 4.5, "fixed_charge": 380.0}
+        },
+    }
+
+    # Once entered, the year is known: the form pre-fills the user's prices.
+    result = await ha.config_entries.options.async_init(entry.entry_id)
+    assert result["step_id"] == "init"
+    assert _suggested(result)["water_rate"] == 2.6
+
+
 def test_store_year_prices_removes_an_override_matching_the_table() -> None:
     options = {
         "wastewater_ratio": 0.785,
@@ -299,6 +370,7 @@ def test_store_year_prices_removes_an_override_matching_the_table() -> None:
 
 async def test_validate_login_signs_in_and_reads_the_account(ha: HomeAssistant) -> None:
     async def _sign_in(self: WatercareApi) -> None:
+        assert self._sign_in_session is not _default_sign_in_session
         self._refresh_token = "issued"
 
     async def _account(self: WatercareApi) -> AccountSummary:

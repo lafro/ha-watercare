@@ -2,8 +2,10 @@
 
 Sign-in uses Azure AD B2C with PKCE and the self-asserted (email and
 password) flow, the only credential path Watercare's tenant offers. That flow
-needs its own cookie jar, so it runs in a short-lived private session. All
-other calls use the session Home Assistant provides.
+needs its own cookie jar, so it runs in a short-lived session from the
+``sign_in_session`` factory (in Home Assistant, one built by Home Assistant's
+own helper; see session.py). All other calls use the session Home Assistant
+provides.
 
 A refresh token is kept and handed to ``token_callback`` whenever it changes,
 so Home Assistant can store it and later restarts resume with a token refresh
@@ -23,6 +25,7 @@ import secrets
 import time
 import uuid
 from collections.abc import Callable, Mapping
+from contextlib import AbstractAsyncContextManager
 from typing import Any, Final
 from urllib.parse import parse_qs, quote
 
@@ -43,7 +46,7 @@ _TOKEN_EXPIRY_MARGIN: Final = 60
 _REDIRECT_STATUSES: Final = frozenset({200, 301, 302, 307, 308})
 _HTTP_OK: Final = 200
 _HTTP_UNAUTHORIZED: Final = 401
-_TIMEOUT: Final = aiohttp.ClientTimeout(total=60)
+REQUEST_TIMEOUT: Final = aiohttp.ClientTimeout(total=60)
 
 
 class WatercareError(Exception):
@@ -70,9 +73,24 @@ def _code_challenge(verifier: str) -> str:
     return base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
 
 
+type SignInSessionFactory = Callable[
+    [], AbstractAsyncContextManager[aiohttp.ClientSession]
+]
+"""Returns a context manager for one sign-in's session, released on exit."""
+
+
+def sign_in_cookie_jar() -> aiohttp.CookieJar:
+    """Return a cookie jar for one B2C sign-in.
+
+    B2C's cookies hold characters that aiohttp would otherwise quote, which
+    breaks the flow.
+    """
+    return aiohttp.CookieJar(quote_cookie=False)
+
+
 def _default_sign_in_session() -> aiohttp.ClientSession:
     return aiohttp.ClientSession(
-        cookie_jar=aiohttp.CookieJar(quote_cookie=False), timeout=_TIMEOUT
+        cookie_jar=sign_in_cookie_jar(), timeout=REQUEST_TIMEOUT
     )
 
 
@@ -105,13 +123,14 @@ class WatercareApi:
         *,
         refresh_token: str | None = None,
         token_callback: Callable[[str], None] | None = None,
-        sign_in_session: Callable[[], aiohttp.ClientSession] | None = None,
+        sign_in_session: SignInSessionFactory | None = None,
     ) -> None:
         """Initialise the client.
 
-        ``sign_in_session`` creates the private session for the B2C sign-in;
-        by default a plain aiohttp session with its own cookie jar, as the
-        flow has always used.
+        ``sign_in_session`` provides the session for one B2C sign-in, with
+        its own cookie jar (``sign_in_cookie_jar``). Home Assistant passes
+        one built by its own helper; without it, a plain aiohttp session is
+        used and closed afterwards.
         """
         self._sign_in_session = sign_in_session or _default_sign_in_session
         self._email = email
@@ -285,7 +304,7 @@ class WatercareApi:
                     "client_id": _CLIENT_ID,
                     "refresh_token": self._refresh_token,
                 },
-                timeout=_TIMEOUT,
+                timeout=REQUEST_TIMEOUT,
             ) as response:
                 if response.status != _HTTP_OK:
                     _LOGGER.debug(
@@ -327,7 +346,7 @@ class WatercareApi:
                 async with self._session.get(
                     f"{_API_BASE}{path}",
                     headers={"authorization": f"Bearer {self._access_token}"},
-                    timeout=_TIMEOUT,
+                    timeout=REQUEST_TIMEOUT,
                 ) as response:
                     if response.status == _HTTP_OK:
                         return await response.json(content_type=None)

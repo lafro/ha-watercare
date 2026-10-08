@@ -41,11 +41,13 @@ class TariffRepairFlow(RepairsFlow):
             self.hass.config_entries.async_schedule_reload(entry.entry_id)
             return self.async_create_entry(data={})
 
-        suggested = schedule_from_options(entry.options).best_known(self._year)
+        # Never pre-fill another year's prices: an unchanged submit would store
+        # them as this year's and end the pause in the cost statistics.
+        known = schedule_from_options(entry.options).for_year(self._year)
         return self.async_show_form(
             step_id="init",
             data_schema=self.add_suggested_values_to_schema(
-                tariff_schema(), suggested.as_options()
+                tariff_schema(), known.as_options() if known else {}
             ),
             description_placeholders={
                 "financial_year": financial_year_label(self._year)

@@ -35,6 +35,7 @@ from .const import (
     PLATFORMS,
 )
 from .coordinator import WatercareCoordinator
+from .session import sign_in_session_factory
 from .tariffs import financial_year, financial_year_label, matching_published_year
 
 _LOGGER = logging.getLogger(__name__)
@@ -72,6 +73,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: WatercareConfigEntry) ->
         async_get_clientsession(hass),
         refresh_token=entry.data.get(CONF_REFRESH_TOKEN),
         token_callback=_async_store_refresh_token,
+        sign_in_session=sign_in_session_factory(hass),
     )
     coordinator = WatercareCoordinator(hass, entry, api)
 

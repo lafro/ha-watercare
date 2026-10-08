@@ -79,16 +79,6 @@ def test_schedule_lookup_order() -> None:
     assert schedule.for_day(date(2026, 7, 1)) is custom
 
 
-def test_best_known_walks_back_to_the_latest_known_year() -> None:
-    schedule = TariffSchedule({})
-    assert (
-        schedule.best_known(LATEST_PUBLISHED_YEAR + 3)
-        == PUBLISHED_TARIFFS[LATEST_PUBLISHED_YEAR]
-    )
-    assert schedule.best_known(2020) == PUBLISHED_TARIFFS[2020]
-    assert schedule.best_known(1990) == PUBLISHED_TARIFFS[FIRST_PUBLISHED_YEAR]
-
-
 def test_schedule_from_options_ignores_malformed_entries() -> None:
     good = {"water_rate": 3.0, "wastewater_rate": 5.0, "fixed_charge": 400.0}
     schedule = schedule_from_options(

@@ -39,6 +39,7 @@ from .const import (
     NZ_TIMEZONE,
 )
 from .models import AccountSummary
+from .session import sign_in_session_factory
 from .tariffs import (
     PUBLISHED_TARIFFS,
     financial_year,
@@ -95,7 +96,12 @@ async def async_validate_login(
     hass: HomeAssistant, email: str, password: str
 ) -> tuple[AccountSummary, str | None]:
     """Sign in and return the account and the refresh token."""
-    api = WatercareApi(email, password, async_get_clientsession(hass))
+    api = WatercareApi(
+        email,
+        password,
+        async_get_clientsession(hass),
+        sign_in_session=sign_in_session_factory(hass),
+    )
     await api.async_sign_in()
     account = await api.async_get_account()
     return account, api.refresh_token
@@ -254,44 +260,97 @@ def store_year_prices(
     return new_options
 
 
+def _ratio_field() -> dict[probatio.Marker, NumberSelector]:
+    return {
+        probatio.Required(CONF_WASTEWATER_RATIO): NumberSelector(
+            NumberSelectorConfig(min=0, max=1, step=0.001, mode=NumberSelectorMode.BOX)
+        )
+    }
+
+
 class WatercareOptionsFlow(OptionsFlowWithReload):
-    """Edit the wastewater ratio and this financial year's prices."""
+    """Edit the wastewater ratio and this financial year's prices.
+
+    When neither a release nor the user has prices for the current financial
+    year, the price fields start empty (``new_year`` step). Pre-filling them
+    with last year's prices would store those as this year's on any save,
+    which would end the pause in the cost statistics with a guess.
+    """
+
+    def _year(self) -> int:
+        return financial_year(dt_util.now(NZ_TIMEZONE).date())
+
+    def _ratio(self) -> float:
+        return float(
+            self.config_entry.options.get(
+                CONF_WASTEWATER_RATIO, DEFAULT_WASTEWATER_RATIO
+            )
+        )
+
+    def _save(self, year: int, user_input: Mapping[str, Any]) -> ConfigFlowResult:
+        options: Mapping[str, Any] = self.config_entry.options
+        if all(key in user_input for key in TARIFF_FIELDS):
+            options = store_year_prices(options, year, user_input)
+        new_options = dict(options)
+        new_options[CONF_WASTEWATER_RATIO] = float(user_input[CONF_WASTEWATER_RATIO])
+        return self.async_create_entry(data=new_options)
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Show the options form."""
-        year = financial_year(dt_util.now(NZ_TIMEZONE).date())
-        options = self.config_entry.options
+        """Show the options form with this year's known prices."""
+        year = self._year()
+        known = schedule_from_options(self.config_entry.options).for_year(year)
+        if known is None:
+            return await self.async_step_new_year()
         if user_input is not None:
-            new_options = store_year_prices(options, year, user_input)
-            new_options[CONF_WASTEWATER_RATIO] = float(
-                user_input[CONF_WASTEWATER_RATIO]
-            )
-            return self.async_create_entry(data=new_options)
+            return self._save(year, user_input)
 
-        schedule = schedule_from_options(options)
-        suggested: dict[str, Any] = {
-            **schedule.best_known(year).as_options(),
-            CONF_WASTEWATER_RATIO: options.get(
-                CONF_WASTEWATER_RATIO, DEFAULT_WASTEWATER_RATIO
-            ),
-        }
         schema = probatio.Schema(
             {
-                probatio.Required(CONF_WASTEWATER_RATIO): NumberSelector(
-                    NumberSelectorConfig(
-                        min=0, max=1, step=0.001, mode=NumberSelectorMode.BOX
-                    )
-                ),
+                **_ratio_field(),
                 **{
                     probatio.Required(key): selector
                     for key, selector in TARIFF_FIELDS.items()
                 },
             }
         )
+        suggested = {**known.as_options(), CONF_WASTEWATER_RATIO: self._ratio()}
         return self.async_show_form(
             step_id="init",
             data_schema=self.add_suggested_values_to_schema(schema, suggested),
             description_placeholders={"financial_year": financial_year_label(year)},
+        )
+
+    async def async_step_new_year(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Show the options form for a year without known prices.
+
+        The prices are optional and start empty: all three are stored, or
+        none.
+        """
+        year = self._year()
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            entered = [key for key in TARIFF_FIELDS if key in user_input]
+            if len(entered) in (0, len(TARIFF_FIELDS)):
+                return self._save(year, user_input)
+            errors["base"] = "incomplete_prices"
+
+        schema = probatio.Schema(
+            {
+                **_ratio_field(),
+                **{
+                    probatio.Optional(key): selector
+                    for key, selector in TARIFF_FIELDS.items()
+                },
+            }
+        )
+        suggested = user_input or {CONF_WASTEWATER_RATIO: self._ratio()}
+        return self.async_show_form(
+            step_id="new_year",
+            data_schema=self.add_suggested_values_to_schema(schema, suggested),
+            description_placeholders={"financial_year": financial_year_label(year)},
+            errors=errors,
         )

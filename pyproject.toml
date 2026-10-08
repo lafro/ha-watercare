@@ -18,8 +18,11 @@ dev = [
 package = false
 override-dependencies = [
   # pytest-homeassistant-custom-component 0.13.370 pins the 2026.10.0b4 beta.
-  # Test against the 2026.10.0 release that production runs. Drop this once a
-  # harness release pins 2026.10.0 or later.
+  # Test against the 2026.10.0 release that production runs. Drop this, and
+  # the homeassistant pin above, once a harness release pins 2026.10.0 or
+  # later; from then on bump only the harness. The override only ever swaps
+  # a beta for its own release: test_home_assistant_under_test_matches_the_
+  # harness fails if a harness bump would leave it testing an older release.
   "homeassistant==2026.10.0",
 ]
 
@@ -40,6 +43,8 @@ exclude_also = [
 [tool.ruff]
 target-version = "py314"
 line-length = 88
+# The agent guard runs on whatever python3 an agent session has.
+per-file-target-version = { ".claude/hooks/*.py" = "py39" }
 
 [tool.ruff.lint]
 select = ["ALL"]
@@ -66,6 +71,19 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["ANN", "ARG001", "D", "FBT001", "INP001", "PLR2004", "S", "SLF001"]
+# The agent guard is a standalone hook script, kept identical to the one in
+# lafro/ha-meridian-energy; it is not part of the integration.
+".claude/hooks/*.py" = [
+  "BLE001",
+  "C901",
+  "D212",
+  "INP001",
+  "PLR0911",
+  "PLR0912",
+  "PLR2004",
+  "S603",
+  "S607",
+]
 
 [tool.mypy]
 python_version = "3.14"

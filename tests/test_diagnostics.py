@@ -40,7 +40,8 @@ async def test_diagnostics_hold_no_identifiers(
     text = json.dumps(result)
     for secret in (EMAIL, PASSWORD, ACCOUNT_NUMBER, METER_NUMBER, "synthetic-refresh"):
         assert secret not in text
-    assert "11000" not in text
+    assert "13000" not in text
+    assert "123.45" not in text
     assert result == snapshot
 
 

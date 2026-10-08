@@ -1,4 +1,9 @@
-"""Synthetic test data. Nothing here is a real account, meter or person."""
+"""Synthetic test data.
+
+Nothing here is a real account, meter, person, bill, balance or usage figure.
+The bills fall on the 3rd and 4th of the month and their volumes are made up;
+keep new fixtures equally obviously synthetic.
+"""
 
 from __future__ import annotations
 
@@ -28,10 +33,10 @@ ACCOUNT_PAYLOAD: list[dict[str, Any]] = [
         "userAccountId": 1,
         "accountNumber": ACCOUNT_NUMBER,
         "accountName": "Test Account",
-        "amountDue": 82.51,
-        "accountBalance": 82.51,
+        "amountDue": 123.45,
+        "accountBalance": 123.45,
         "overdueAmount": 0,
-        "dueDate": "2026-10-06T23:59:59Z",
+        "dueDate": "2026-09-25T23:59:59Z",
         "hasDueDate": True,
         "meterType": "mechanical",
         "meters": [{"id": METER_NUMBER}],
@@ -63,17 +68,20 @@ def api_period(
         "statistics": {
             "dailyAverage": round(usage / number_of_days),
             "numberOfDays": number_of_days,
-            "efficiency": {"currentHouseholdBand": 3, "usageToLowerBand": 12},
+            "efficiency": {"currentHouseholdBand": 2, "usageToLowerBand": 25},
         },
     }
 
 
 def default_periods() -> list[dict[str, Any]]:
-    """Three consecutive bills, newest first as the API sends them."""
+    """Three consecutive bills, newest first as the API sends them.
+
+    The oldest spans 1 July 2026, so it is priced at 2025/26 prices.
+    """
     return [
-        api_period(date(2026, 8, 17), date(2026, 9, 15), 11000, reading="E"),
-        api_period(date(2026, 7, 17), date(2026, 8, 16), 9000),
-        api_period(date(2026, 6, 16), date(2026, 7, 16), 10000),
+        api_period(date(2026, 8, 4), date(2026, 9, 2), 13000, reading="E"),
+        api_period(date(2026, 7, 4), date(2026, 8, 3), 8000),
+        api_period(date(2026, 6, 3), date(2026, 7, 3), 12000),
     ]
 
 

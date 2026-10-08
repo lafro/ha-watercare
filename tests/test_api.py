@@ -10,6 +10,8 @@ from typing import Any
 
 import aiohttp
 import pytest
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from pytest_homeassistant_custom_component.test_util.aiohttp import (
     AiohttpClientMocker,
     AiohttpClientMockResponse,
@@ -21,7 +23,9 @@ from custom_components.watercare.api import (
     WatercareConnectionError,
     _default_sign_in_session,
     parse_settings,
+    sign_in_cookie_jar,
 )
+from custom_components.watercare.session import sign_in_session_factory
 
 from .common import ACCOUNT_NUMBER, ACCOUNT_PAYLOAD, EMAIL, PASSWORD, default_periods
 
@@ -378,3 +382,43 @@ async def test_malformed_token_responses(aioclient_mock: AiohttpClientMocker) ->
     assert not await api.async_refresh_access_token()
     with pytest.raises(WatercareConnectionError):
         await api.async_sign_in()
+
+
+async def test_home_assistant_sign_in_session(hass: HomeAssistant) -> None:
+    """Each sign-in gets its own session from Home Assistant's helper."""
+    shared = async_get_clientsession(hass)
+    factory = sign_in_session_factory(hass)
+
+    async with factory() as session:
+        assert session is not shared
+        assert isinstance(session.cookie_jar, aiohttp.CookieJar)
+        assert session.cookie_jar._quote_cookie is False
+        assert session.cookie_jar is not shared.cookie_jar
+        assert session.connector is shared.connector
+        assert session.timeout.total == 60
+        assert session.headers["User-Agent"] == shared.headers["User-Agent"]
+    # Detached, not closed: Home Assistant's connector stays open.
+    assert session.closed
+    assert not shared.closed
+    assert shared.connector is not None
+    assert not shared.connector.closed
+
+
+async def test_sign_in_through_the_home_assistant_session(
+    hass: HomeAssistant, aioclient_mock: AiohttpClientMocker
+) -> None:
+    _sign_in_ok(aioclient_mock)
+    api = WatercareApi(
+        EMAIL,
+        PASSWORD,
+        async_get_clientsession(hass),
+        sign_in_session=sign_in_session_factory(hass),
+    )
+
+    await api.async_sign_in()
+
+    assert api.refresh_token == "refresh-1"
+
+
+async def test_sign_in_cookie_jar_keeps_cookies_unquoted() -> None:
+    assert sign_in_cookie_jar()._quote_cookie is False

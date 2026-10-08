@@ -25,9 +25,9 @@ async def test_fix_flow_stores_the_new_year_and_reloads(
     mock_api: dict[str, AsyncMock],
     freezer: FrozenDateTimeFactory,
 ) -> None:
-    freezer.move_to("2027-07-02T12:00:00+12:00")
+    freezer.move_to("2027-08-10T12:00:00+12:00")
     mock_api["periods"].return_value = [
-        api_period(date(2027, 6, 16), date(2027, 7, 1), 5000),
+        api_period(date(2027, 7, 4), date(2027, 8, 3), 5000),
         *default_periods(),
     ]
     entry = make_entry()
@@ -46,6 +46,12 @@ async def test_fix_flow_stores_the_new_year_and_reloads(
     result = await flow.async_step_init()
     assert result["type"] is FlowResultType.FORM
     assert result["description_placeholders"] == {"financial_year": "2027/28"}
+    # Nothing is pre-filled: last year's prices would be stored by a submit
+    # without changes.
+    assert all(
+        "suggested_value" not in (key.description or {})
+        for key in result["data_schema"].schema
+    )
 
     result = await flow.async_step_init(
         {"water_rate": 2.6, "wastewater_rate": 4.5, "fixed_charge": 380}
@@ -58,6 +64,26 @@ async def test_fix_flow_stores_the_new_year_and_reloads(
     }
     assert ir.async_get(ha).async_get_issue(DOMAIN, issue_id) is None
     assert entry.runtime_data.data.latest_cost is not None
+
+
+async def test_fix_flow_pre_fills_a_year_that_became_known(
+    ha: HomeAssistant, mock_api: dict[str, AsyncMock]
+) -> None:
+    prices = {"water_rate": 2.6, "wastewater_rate": 4.5, "fixed_charge": 380.0}
+    entry = make_entry(
+        options={"wastewater_ratio": 0.785, "tariff_overrides": {"2027": prices}}
+    )
+    entry.add_to_hass(ha)
+    flow = TariffRepairFlow(entry.entry_id, 2027)
+    flow.hass = ha
+
+    result = await flow.async_step_init()
+
+    suggested = {
+        str(key): key.description["suggested_value"]  # type: ignore[index]
+        for key in result["data_schema"].schema
+    }
+    assert suggested == prices
 
 
 async def test_fix_flow_for_a_removed_entry(ha: HomeAssistant) -> None:

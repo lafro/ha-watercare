@@ -12,7 +12,7 @@ Based on the MIT-licensed [brunsy/ha-watercare](https://github.com/brunsy/ha-wat
 ## What it provides
 
 - Water use for the Energy dashboard's **Water** view, one value per day: each bill is spread evenly over the days it covers.
-- Water cost for each day at the price Watercare charged that day. Watercare's published residential prices for every financial year since 2018/19 are built in ([sources](docs/tariffs.md)).
+- Water cost for each day at the prices Watercare charged: each bill at the prices in force when its billing period started, spread over its days. Watercare's published residential prices for every financial year since 2018/19 are built in ([sources](docs/tariffs.md)).
 - Sensors for the last bill (usage, cost, daily average, reading type, efficiency band) and the account (balance, amount due, payment due date, meter number).
 - A repair notice each July if the integration does not yet know the new year's prices.
 - Re-authentication, reconfiguration and privacy-safe diagnostics.
@@ -51,7 +51,7 @@ Open **Settings → Devices & services → Watercare → Configure**.
 | Option | Meaning |
 |---|---|
 | Wastewater ratio | Share of metered water billed as wastewater. Most homes are 0.785 (78.5%), apartments 0.95. Your bill shows it as, for example, "@78.50%". |
-| Water rate, Wastewater rate, Wastewater fixed charge | Prices for the **current** financial year, GST-inclusive. They are pre-filled from Watercare's published prices. Change them only if your bill shows different prices; earlier years always use the published prices. |
+| Water rate, Wastewater rate, Wastewater fixed charge | Prices for bills that start in the **current** financial year, GST-inclusive. They are pre-filled from Watercare's published prices when the integration knows them, and left empty when it does not (enter all three from your bill, or none). Change them only if your bill shows different prices; earlier years always use the published prices. A change never reprices days already recorded. |
 
 Use **Reconfigure** on the integration to change the email or password for the same account.
 
@@ -62,7 +62,7 @@ One service device, **Watercare**, represents the account.
 | Entity | Meaning |
 |---|---|
 | Last bill usage | Litres used in the most recent billing period. Mechanical meters are billed in whole kilolitres. |
-| Last bill cost | Cost of that period at the prices in force on each of its days. Unknown while a price is missing. |
+| Last bill cost | Cost of that period at the prices in force when it started, as Watercare charges it. Unknown while a price is missing. |
 | Daily average | Watercare's average daily use for that period. |
 | Last billing period end | When the most recent billing period ended (diagnostic). |
 | Payment due | When payment is due (diagnostic). |
@@ -72,7 +72,7 @@ One service device, **Watercare**, represents the account.
 | Overdue amount | From the account (diagnostic, disabled by default). |
 | Meter number | The meter on the account (diagnostic). |
 
-Watercare publishes only completed billing periods, so these describe the last issued bill, not use accruing now. None of the sensors has a state class; the Energy dashboard uses the statistics below.
+Watercare publishes only completed billing periods, so these describe the last issued bill, not use accruing now. The usage and cost sensors have no state class; the Energy dashboard uses the statistics below.
 
 ## Energy dashboard
 
@@ -90,7 +90,7 @@ In **Settings → Dashboards → Energy → Water consumption**, add *Watercare 
 How the numbers are built (details in [docs/statistics.md](docs/statistics.md)):
 
 - Each bill's volume is spread evenly over the days it covers, so day, week and month views show use where it happened rather than one spike when the bill arrives.
-- Each day is priced with that day's financial-year prices. A bill that spans 1 July is split between the two years by day.
+- Each bill is priced at the prices in force when its billing period started, as Watercare charges it, so a bill that spans 1 July keeps the earlier year's prices. Its cost is spread over its days like its volume.
 - A poll only adds days after the stored history and never rewrites it.
 
 ## Data updates
@@ -99,17 +99,17 @@ The integration polls Watercare every 12 hours. A new bill appears in Home Assis
 
 ## Prices and 1 July
 
-Watercare changes its prices every 1 July and has no API for them. Each release carries the published prices up to its own date. If the integration does not know the current year's prices, it:
+Watercare changes its prices every 1 July, charging the new prices from the first bill that starts on or after that date, and has no API for them. Each release carries the published prices up to its own date. If the integration does not know a year's prices, it:
 
 - keeps recording water use;
-- pauses the cost statistics from 1 July, rather than guessing;
+- pauses the cost statistics from the first bill that starts on or after 1 July, rather than guessing;
 - shows a repair notice under **Settings → System → Repairs** that asks for the prices from your bill.
 
-Entering the prices there (or in the options), or updating to a release that includes them, resumes the cost statistics from 1 July.
+Entering the prices there (or in the options), or updating to a release that includes them, resumes the cost statistics where they paused.
 
 ## Upgrading from 1.4.x
 
-Version 1.5.0 changes how the statistics are stored (daily rows instead of one row per bill, and each year at its own prices). On its first poll it clears the four `watercare:*` statistics and imports the whole history again in the new format, once. **Back up Home Assistant and export these statistics first.** The steps, checks and rollback are in [docs/migration.md](docs/migration.md). The entities, their history and the Energy dashboard configuration are kept.
+Version 1.5.0 changes how the statistics are stored (daily rows instead of one row per bill, and each bill at the prices of the year it starts in). On its first poll it clears the four `watercare:*` statistics and imports the whole history again in the new format, once. **Back up Home Assistant and export these statistics first.** The steps, a read-only pre-flight, the checks and the rollback are in [docs/migration.md](docs/migration.md). The entities, their history and the Energy dashboard configuration are kept.
 
 The flat prices entered in 1.4.x are replaced by the published price table. If they matched a published year, nothing else changes; if they did not, they are kept as the current year's prices.
 
@@ -165,14 +165,14 @@ automation:
 - Mechanical meters only. Smart-meter data uses different endpoints whose formats have not been verified; support needs a real sample first.
 - Daily values are an even split of each bill, not measured daily use. A mechanical meter is read about monthly in whole kilolitres.
 - Costs are calculated from published residential prices; Watercare's API provides no dollar figures. Infrastructure growth charges, trade waste, late fees and credits are not included. Business accounts use different prices and are not supported.
-- Watercare's own split of a bill across 1 July may differ from the even per-day split by a few cents.
+- A bill that spans 1 July is charged at the prices of the year it starts in. This matches the one such bill checked so far to the cent (a split by day would have been about 3.7% too high); if one of your bills shows otherwise, please open an issue.
 - History before 1 July 2018 is priced at the 2018/19 prices, the earliest year in the table.
 
 ## Troubleshooting
 
 - **Setup says it cannot connect:** Watercare may be down for maintenance. Try again later.
 - **Re-authentication requested:** Watercare rejected the stored password. Enter the current one.
-- **Costs stopped on 1 July:** the integration does not know the new prices yet. Fix the repair notice or update the integration.
+- **Costs stopped after 1 July:** the integration does not know the new year's prices yet. Fix the repair notice or update the integration.
 - **A "statistics were not rebuilt" repair notice:** see [docs/statistics.md](docs/statistics.md#when-the-rebuild-is-skipped).
 - For a reproducible problem, use the integration's ⋮ menu to **Enable debug logging**, reproduce it, then **Disable debug logging** to download the log. Download diagnostics from the same menu. Logs and diagnostics leave out credentials, account and meter numbers and usage, but review them before sharing and follow the issue form's privacy warning.
 

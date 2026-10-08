@@ -8,10 +8,12 @@ The 1.5.0 model (docs/statistics.md has the reasoning):
 * **Anchored sums.** A poll only adds rows for days after the last stored
   row, continuing that row's running sum. Stored history is never rewritten
   by a normal poll, and a shorter API response cannot step the sum down.
-* **Costs at the tariff in force.** Each day is priced with that day's
-  financial-year tariff (tariffs.py). Cost rows stop at the first day that
-  has no known tariff and resume once one is available, so a missing price
-  never becomes a wrong one.
+* **Costs at the tariff in force.** Watercare prices a whole bill at the
+  prices in force when its billing period starts, so every day of a bill is
+  priced with the financial-year tariff (tariffs.py) of the bill's start
+  date, and a bill that spans 1 July keeps the earlier year's prices. Cost
+  rows stop at the first day whose bill has no known tariff and resume once
+  one is available, so a missing price never becomes a wrong one.
 * **One-off rebuild.** Entries upgraded from 1.4.x hold one row per bill,
   priced at a single flat tariff. ``async_rebuild`` clears the four
   statistics and imports the full history in the new format, once.
@@ -26,7 +28,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from itertools import pairwise
-from typing import Final, Literal
+from typing import Final, Literal, Protocol
 
 from homeassistant.components.recorder import get_instance  # type: ignore[attr-defined]
 from homeassistant.components.recorder.models import (
@@ -53,7 +55,13 @@ from .const import (
     STAT_WASTEWATER_COST,
 )
 from .models import BillingPeriod
-from .tariffs import DAYS_PER_YEAR, Tariff, TariffSchedule
+from .tariffs import (
+    DAYS_PER_YEAR,
+    Tariff,
+    TariffSchedule,
+    financial_year,
+    financial_year_label,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -76,24 +84,71 @@ _COST_STATISTICS: Final[dict[str, tuple[str, CostKind]]] = {
 # --- Pure calculations -------------------------------------------------------
 
 
+type BillKey = tuple[date, date]
+"""A bill's start and end date, which identify it (parse_billing_periods
+drops duplicates)."""
+
+
+def bill_key(period: BillingPeriod) -> BillKey:
+    """Return the key of a bill."""
+    return (period.start, period.end)
+
+
+def pricing_date(period: BillingPeriod) -> date:
+    """Return the date whose tariff prices the whole bill.
+
+    Watercare prices a bill at the prices in force when its billing period
+    starts: a bill that runs from June into July is charged entirely at the
+    earlier financial year's prices. A bill spanning 1 July 2026 matched this
+    to the cent, where a split by day was several dollars out; docs/tariffs.md
+    has the details. Change the rule here, and only here, if more bills show
+    otherwise.
+    """
+    return period.start
+
+
 @dataclass(frozen=True, slots=True)
-class DailyUsage:
-    """One Auckland day's share of a bill."""
+class BillShare:
+    """One bill's share of one Auckland day."""
 
     day: date
     litres: Decimal
     fixed_charge_days: Decimal
-    """Billing days this row stands for (1 unless Watercare's day count and
-    the spread length differ)."""
+    """Billing days this share stands for (1 unless Watercare's day count
+    and the spread length differ)."""
+    bill: BillKey
+    priced_on: date
+    """The date whose tariff prices this share (see ``pricing_date``)."""
+
+
+@dataclass(frozen=True, slots=True)
+class DailyUsage:
+    """One Auckland day: the shares of every bill spread over it."""
+
+    day: date
+    shares: tuple[BillShare, ...]
+
+    @property
+    def litres(self) -> Decimal:
+        """Return the litres recorded for the day."""
+        return sum((share.litres for share in self.shares), Decimal(0))
 
 
 @dataclass(frozen=True, slots=True)
 class DailyCost:
-    """Cost of one day, GST-inclusive (NZD)."""
+    """Cost of one day or one bill, GST-inclusive (NZD)."""
 
     water: Decimal
     wastewater: Decimal
     fixed: Decimal
+
+    def __add__(self, other: DailyCost) -> DailyCost:
+        """Return the sum of two costs."""
+        return DailyCost(
+            self.water + other.water,
+            self.wastewater + other.wastewater,
+            self.fixed + other.fixed,
+        )
 
     @property
     def total(self) -> Decimal:
@@ -107,6 +162,9 @@ class DailyCost:
         if kind == "wastewater":
             return self.wastewater
         return self.total
+
+
+_NO_COST: Final = DailyCost(Decimal(0), Decimal(0), Decimal(0))
 
 
 def spread_period_days(
@@ -154,36 +212,86 @@ def split_evenly(total: Decimal, parts: int) -> list[Decimal]:
     return [later - earlier for earlier, later in pairwise(shares)]
 
 
-def daily_usage(
+def bill_shares(
     periods: Iterable[BillingPeriod], *, after: date | None = None
-) -> list[DailyUsage]:
-    """Spread every bill evenly over its days; one entry per day, oldest first.
+) -> list[BillShare]:
+    """Spread every bill evenly over its days, oldest bill first.
 
-    The sum of all entries equals the sum of all bills.
+    The litres of a bill's shares add up to the bill, and its fixed-charge
+    days to Watercare's day count for it.
     """
-    litres: dict[date, Decimal] = {}
-    fixed_days: dict[date, Decimal] = {}
+    shares: list[BillShare] = []
     for period, days in spread_period_days(periods, after=after):
         usage_shares = split_evenly(Decimal(period.usage_litres), len(days))
         fixed_shares = split_evenly(Decimal(period.number_of_days), len(days))
-        for day, usage_share, fixed_share in zip(
-            days, usage_shares, fixed_shares, strict=True
-        ):
-            litres[day] = litres.get(day, Decimal(0)) + usage_share
-            fixed_days[day] = fixed_days.get(day, Decimal(0)) + fixed_share
-    return [DailyUsage(day, litres[day], fixed_days[day]) for day in sorted(litres)]
+        key = bill_key(period)
+        priced_on = pricing_date(period)
+        shares.extend(
+            BillShare(day, usage_share, fixed_share, key, priced_on)
+            for day, usage_share, fixed_share in zip(
+                days, usage_shares, fixed_shares, strict=True
+            )
+        )
+    return shares
+
+
+def daily_usage(
+    periods: Iterable[BillingPeriod], *, after: date | None = None
+) -> list[DailyUsage]:
+    """Return one entry per day, oldest first, with each bill's share of it.
+
+    The litres of all entries add up to the sum of all bills.
+    """
+    by_day: dict[date, list[BillShare]] = {}
+    for share in bill_shares(periods, after=after):
+        by_day.setdefault(share.day, []).append(share)
+    return [DailyUsage(day, tuple(by_day[day])) for day in sorted(by_day)]
+
+
+class _Priceable(Protocol):
+    @property
+    def litres(self) -> Decimal: ...
+
+    @property
+    def fixed_charge_days(self) -> Decimal: ...
 
 
 def daily_cost(
-    usage: DailyUsage, tariff: Tariff, wastewater_ratio: Decimal
+    usage: _Priceable, tariff: Tariff, wastewater_ratio: Decimal
 ) -> DailyCost:
-    """Price one day's usage with the tariff in force on that day."""
+    """Price litres and fixed-charge days with one tariff."""
     kilolitres = usage.litres / _LITRES_PER_KILOLITRE
     return DailyCost(
         water=kilolitres * tariff.water_rate,
         wastewater=kilolitres * wastewater_ratio * tariff.wastewater_rate,
         fixed=tariff.fixed_charge / DAYS_PER_YEAR * usage.fixed_charge_days,
     )
+
+
+class MissingTariffError(LookupError):
+    """A bill needs the prices of a financial year the schedule lacks."""
+
+    def __init__(self, year: int) -> None:
+        """Initialise the error with the financial year that is missing."""
+        super().__init__(year)
+        self.year = year
+
+
+def day_cost(
+    usage: DailyUsage, schedule: TariffSchedule, wastewater_ratio: Decimal
+) -> DailyCost:
+    """Price one day, each bill's share at that bill's tariff.
+
+    Raises MissingTariffError, naming the earliest such year, when a bill on
+    that day has no known tariff.
+    """
+    cost = _NO_COST
+    for share in sorted(usage.shares, key=lambda share: share.priced_on):
+        tariff = schedule.for_day(share.priced_on)
+        if tariff is None:
+            raise MissingTariffError(financial_year(share.priced_on))
+        cost += daily_cost(share, tariff, wastewater_ratio)
+    return cost
 
 
 BillCost = DailyCost
@@ -196,29 +304,19 @@ def bill_cost(
     schedule: TariffSchedule,
     wastewater_ratio: Decimal,
 ) -> BillCost | None:
-    """Return the cost of one bill, or None if any of its days has no tariff.
+    """Return the cost of one bill, or None if its tariff is unknown.
 
-    Uses the same daily rows as the statistics, so the sensor and the Energy
+    Uses the same shares as the statistics, so the sensor and the Energy
     dashboard always agree.
     """
-    spread = dict(spread_period_days(periods))
-    if period not in spread:
+    key = bill_key(period)
+    tariff = schedule.for_day(pricing_date(period))
+    shares = [share for share in bill_shares(periods) if share.bill == key]
+    if tariff is None or not shares:
         return None
-    days = set(spread[period])
-    total = DailyCost(Decimal(0), Decimal(0), Decimal(0))
-    for usage in daily_usage(periods):
-        if usage.day not in days:
-            continue
-        tariff = schedule.for_day(usage.day)
-        if tariff is None:
-            return None
-        cost = daily_cost(usage, tariff, wastewater_ratio)
-        total = DailyCost(
-            total.water + cost.water,
-            total.wastewater + cost.wastewater,
-            total.fixed + cost.fixed,
-        )
-    return total
+    return sum(
+        (daily_cost(share, tariff, wastewater_ratio) for share in shares), _NO_COST
+    )
 
 
 def day_start(day: date) -> datetime:
@@ -236,6 +334,9 @@ class ImportResult:
     consumption_rows: int = 0
     cost_rows: int = 0
     first_day_without_tariff: date | None = None
+    """The day the cost statistics stop at, when a tariff is missing."""
+    missing_tariff_year: int | None = None
+    """The financial year whose prices that day's bill needs."""
     rebuilt: bool = False
 
 
@@ -342,15 +443,13 @@ def _write(
         async_add_external_statistics(hass, _consumption_metadata(), consumption_rows)
 
     cost_rows = 0
-    first_missing: date | None = None
+    first_missing: tuple[date, int] | None = None
     for statistic_id, (name, kind) in _COST_STATISTICS.items():
         rows, missing = _cost_rows(
             days, stored[statistic_id], schedule, wastewater_ratio, kind
         )
-        if missing is not None:
-            first_missing = (
-                missing if first_missing is None else min(first_missing, missing)
-            )
+        if missing is not None and (first_missing is None or missing < first_missing):
+            first_missing = missing
         if rows:
             async_add_external_statistics(
                 hass, _cost_metadata(statistic_id, name), rows
@@ -359,14 +458,16 @@ def _write(
 
     if first_missing is not None:
         _LOGGER.info(
-            "Watercare cost statistics paused at %s: no tariff is known for "
-            "that financial year yet",
-            first_missing.isoformat(),
+            "Watercare cost statistics paused at %s: no tariff is known for the "
+            "%s prices that bill needs",
+            first_missing[0].isoformat(),
+            financial_year_label(first_missing[1]),
         )
     return ImportResult(
         consumption_rows=len(consumption_rows),
         cost_rows=cost_rows,
-        first_day_without_tariff=first_missing,
+        first_day_without_tariff=first_missing[0] if first_missing else None,
+        missing_tariff_year=first_missing[1] if first_missing else None,
     )
 
 
@@ -393,19 +494,24 @@ def _cost_rows(
     schedule: TariffSchedule,
     wastewater_ratio: Decimal,
     kind: CostKind,
-) -> tuple[list[StatisticData], date | None]:
+) -> tuple[list[StatisticData], tuple[date, int] | None]:
+    """Return cost rows after the stored ones, and where they stop, if they do.
+
+    The stop is the first day a bill on it has no tariff, with the financial
+    year that bill needs.
+    """
     running = stored.total if stored is not None else Decimal(0)
     rows: list[StatisticData] = []
     for usage in days:
         start = day_start(usage.day)
         if stored is not None and start <= stored.start:
             continue
-        tariff = schedule.for_day(usage.day)
-        if tariff is None:
+        try:
+            amount = day_cost(usage, schedule, wastewater_ratio).part(kind)
+        except MissingTariffError as err:
             # Keep the series contiguous: stop here and resume from this day
             # once a tariff exists.
-            return rows, usage.day
-        amount = daily_cost(usage, tariff, wastewater_ratio).part(kind)
+            return rows, (usage.day, err.year)
         running += amount
         rows.append({"start": start, "state": float(amount), "sum": float(running)})
     return rows, None

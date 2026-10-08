@@ -40,6 +40,7 @@ from .statistics import (
     async_rebuild,
     async_rebuild_would_lose_history,
     bill_cost,
+    pricing_date,
 )
 from .tariffs import (
     Tariff,
@@ -135,7 +136,7 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
         periods = parsed.periods
         latest = periods[-1]
         result = await self._async_update_statistics(periods)
-        missing_year = self._async_check_tariff(result.first_day_without_tariff)
+        missing_year = self._async_check_tariff(result.missing_tariff_year)
 
         return WatercareData(
             account=account,
@@ -143,7 +144,7 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
             latest_cost=bill_cost(
                 latest, periods, self.schedule, self.wastewater_ratio
             ),
-            latest_tariff=self.schedule.for_day(latest.end),
+            latest_tariff=self.schedule.for_day(pricing_date(latest)),
             period_count=len(periods),
             skipped_periods=parsed.skipped,
             duplicate_periods=parsed.duplicates,
@@ -194,19 +195,16 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
         )
         return result
 
-    def _async_check_tariff(self, first_unpriced_day: date | None) -> int | None:
+    def _async_check_tariff(self, unpriced_year: int | None) -> int | None:
         """Raise or clear the repair issue for a financial year without prices.
 
         The year asked for is the earliest one that blocks the cost
         statistics, or else the current year if it has no prices yet.
         """
         today: date = dt_util.now(NZ_TIMEZONE).date()
-        if first_unpriced_day is not None:
-            year: int | None = financial_year(first_unpriced_day)
-        elif not self.schedule.has_year(financial_year(today)):
+        year: int | None = unpriced_year
+        if year is None and not self.schedule.has_year(financial_year(today)):
             year = financial_year(today)
-        else:
-            year = None
         issue_id = f"{ISSUE_TARIFF_MISSING}_{self.config_entry.entry_id}"
         if year is None:
             ir.async_delete_issue(self.hass, DOMAIN, issue_id)

@@ -52,7 +52,23 @@
     "step": {
       "init": {
         "title": "Watercare prices",
-        "description": "Prices for the {financial_year} financial year, including GST. They are pre-filled from Watercare's published price schedule when the integration knows it. Change them only if your bill shows different prices; earlier years always use the published prices.",
+        "description": "Prices for bills that start in the {financial_year} financial year, including GST, pre-filled from Watercare's published price schedule or from your own earlier entry. Change them only if your bill shows different prices. Earlier years always use the published prices, and a change never reprices days that are already recorded.",
+        "data": {
+          "wastewater_ratio": "Wastewater ratio",
+          "water_rate": "Water rate",
+          "wastewater_rate": "Wastewater rate",
+          "fixed_charge": "Wastewater fixed charge"
+        },
+        "data_description": {
+          "wastewater_ratio": "Share of metered water billed as wastewater. Shown on the bill as, for example, '@78.50%', entered here as 0.785. Most homes are 0.785 and apartments 0.95.",
+          "water_rate": "Per 1,000 litres of water, including GST. Shown on the bill under 'Charge details'.",
+          "wastewater_rate": "Per 1,000 litres of wastewater, including GST.",
+          "fixed_charge": "Per year, including GST. Shown on the bill under 'Fixed charges' as a 'pa' amount."
+        }
+      },
+      "new_year": {
+        "title": "Watercare prices",
+        "description": "This version of the integration does not know Watercare's prices for the {financial_year} financial year, so cost statistics pause at the first bill that starts on or after 1 July. Enter all three prices from a bill that starts in {financial_year} (including GST), or leave them empty to keep waiting for a release that includes them. Prices never reprice days that are already recorded.",
         "data": {
           "wastewater_ratio": "Wastewater ratio",
           "water_rate": "Water rate",
@@ -66,6 +82,9 @@
           "fixed_charge": "Per year, including GST. Shown on the bill under 'Fixed charges' as a 'pa' amount."
         }
       }
+    },
+    "error": {
+      "incomplete_prices": "Enter all three prices, or leave all three empty."
     }
   },
   "entity": {
@@ -129,7 +148,7 @@
         "step": {
           "init": {
             "title": "Watercare prices for {financial_year}",
-            "description": "Watercare changes its prices every 1 July, and this version of the integration does not know the {financial_year} prices yet. Water cost statistics are paused from 1 July until they are entered; usage is still recorded. Copy the prices from your bill, or update the integration once a release includes them.",
+            "description": "Watercare changes its prices every 1 July and charges each bill at the prices in force when its billing period starts. This version of the integration does not know the {financial_year} prices yet, so water cost statistics are paused from the first bill that starts in {financial_year}; usage is still recorded. Copy the prices from that bill, or update the integration once a release includes them. Prices entered here never reprice days that are already recorded.",
             "data": {
               "water_rate": "Water rate",
               "wastewater_rate": "Wastewater rate",
@@ -149,7 +168,7 @@
     },
     "statistics_rebuild_skipped": {
       "title": "Watercare statistics were not rebuilt",
-      "description": "Version 1.5.0 records water use as daily rows priced at the tariff of each year. It did not rebuild the stored Watercare statistics because they reach back further than the bills Watercare now returns, and a rebuild would lose that history. New days are added after the stored history. See the statistics documentation for a manual rebuild."
+      "description": "Version 1.5.0 records water use as daily rows, each bill priced at the tariff in force when it started. It did not rebuild the stored Watercare statistics because they reach back further than the bills Watercare now returns, and a rebuild would lose that history. New days are added after the stored history. See the statistics documentation for a manual rebuild."
     }
   }
 }

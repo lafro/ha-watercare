@@ -8,8 +8,8 @@ https://github.com/brunsy/ha-watercare
 Code reused from that project remains under its MIT licence; the original
 copyright notice is kept in LICENSE. This repository was started as a fresh,
 standalone history (not a GitHub fork). Its first commit imports the code of
-lafro/ha-watercare v1.4.1, a fork of the project above, with test fixtures
-replaced by synthetic values.
+lafro/ha-watercare v1.4.1, a fork of the project above, without its account
+identifiers. Test data in this repository is synthetic.
 
 No Watercare source code, credentials or customer records are included in this
 repository. The Watercare name and logo are used only to identify the service

@@ -51,7 +51,7 @@
     'last_changed': <ANY>,
     'last_reported': <ANY>,
     'last_updated': <ANY>,
-    'state': '82.51',
+    'state': '123.45',
   })
 # ---
 # name: test_sensors[sensor.watercare_amount_due-entry]
@@ -106,7 +106,7 @@
     'last_changed': <ANY>,
     'last_reported': <ANY>,
     'last_updated': <ANY>,
-    'state': '82.51',
+    'state': '123.45',
   })
 # ---
 # name: test_sensors[sensor.watercare_daily_average-entry]
@@ -163,7 +163,7 @@
     'last_changed': <ANY>,
     'last_reported': <ANY>,
     'last_updated': <ANY>,
-    'state': '367.0',
+    'state': '433.0',
   })
 # ---
 # name: test_sensors[sensor.watercare_household_efficiency_band-entry]
@@ -213,7 +213,7 @@
     'last_changed': <ANY>,
     'last_reported': <ANY>,
     'last_updated': <ANY>,
-    'state': '3',
+    'state': '2',
   })
 # ---
 # name: test_sensors[sensor.watercare_last_bill_cost-entry]
@@ -268,7 +268,7 @@
     'last_changed': <ANY>,
     'last_reported': <ANY>,
     'last_updated': <ANY>,
-    'state': '93.27',
+    'state': '104.91',
   })
 # ---
 # name: test_sensors[sensor.watercare_last_bill_usage-entry]
@@ -314,27 +314,27 @@
 # name: test_sensors[sensor.watercare_last_bill_usage-state]
   StateSnapshot({
     'attributes': ReadOnlyDict({
-      'account_balance': 82.51,
-      'amount_due': 82.51,
-      'billing_period_from': '2026-08-16T12:00:00.000Z',
-      'billing_period_to': '2026-09-14T12:00:00.000Z',
-      'billing_period_usage': 11000,
+      'account_balance': 123.45,
+      'amount_due': 123.45,
+      'billing_period_from': '2026-08-03T12:00:00.000Z',
+      'billing_period_to': '2026-09-01T12:00:00.000Z',
+      'billing_period_usage': 13000,
       'consumption_rate_per_1000L': 2.46,
       'cost_currency': 'NZD',
-      'current_period_cost': 93.27,
-      'current_period_cost_consumption': 27.06,
-      'current_period_cost_wastewater': 36.96,
-      'daily_average': 367.0,
+      'current_period_cost': 104.91,
+      'current_period_cost_consumption': 31.98,
+      'current_period_cost_wastewater': 43.68,
+      'daily_average': 433.0,
       <EntityStateAttribute.DEVICE_CLASS: 'device_class'>: 'water',
       <EntityStateAttribute.FRIENDLY_NAME: 'friendly_name'>: 'Watercare Last bill usage',
-      'household_efficiency_band': 3,
+      'household_efficiency_band': 2,
       'meter_type': 'mechanical',
       'overdue_amount': 0.0,
-      'payment_due_date': '2026-10-06T23:59:59Z',
+      'payment_due_date': '2026-09-25T23:59:59Z',
       'reading_type': 'E',
       'tariff_year': '2026/27',
       <EntityStateAttribute.UNIT_OF_MEASUREMENT: 'unit_of_measurement'>: <UnitOfVolume.LITERS: 'L'>,
-      'usage_to_lower_band': 12,
+      'usage_to_lower_band': 25,
       'wastewater_rate_per_1000L': 4.28,
     }),
     'context': <ANY>,
@@ -342,7 +342,7 @@
     'last_changed': <ANY>,
     'last_reported': <ANY>,
     'last_updated': <ANY>,
-    'state': '11000',
+    'state': '13000',
   })
 # ---
 # name: test_sensors[sensor.watercare_last_billing_period_end-entry]
@@ -393,7 +393,7 @@
     'last_changed': <ANY>,
     'last_reported': <ANY>,
     'last_updated': <ANY>,
-    'state': '2026-09-14T12:00:00+00:00',
+    'state': '2026-09-01T12:00:00+00:00',
   })
 # ---
 # name: test_sensors[sensor.watercare_meter_number-entry]
@@ -549,7 +549,7 @@
     'last_changed': <ANY>,
     'last_reported': <ANY>,
     'last_updated': <ANY>,
-    'state': '2026-10-06T23:59:59+00:00',
+    'state': '2026-09-25T23:59:59+00:00',
   })
 # ---
 # name: test_sensors[sensor.watercare_reading_type-entry]

@@ -84,5 +84,5 @@ rules:
     comment: The asynchronous API client is embedded; there is no external library.
   inject-websession:
     status: done
-    comment: API calls use Home Assistant's session. Sign-in alone uses a short-lived private session, because the B2C flow needs its own cookie jar.
+    comment: API calls use Home Assistant's shared session. The B2C sign-in needs its own cookie jar, so each sign-in gets a short-lived session from async_create_clientsession, detached afterwards (session.py).
   strict-typing: done

@@ -1,8 +1,9 @@
 """Watercare residential tariffs by financial year.
 
-Watercare reprices on 1 July. Costs are worked out per day with the tariff in
-force on that day, so a bill that spans 1 July is apportioned between the two
-years by day, and past bills keep the prices that applied at the time.
+Watercare reprices on 1 July and prices each bill at the tariff in force when
+its billing period starts, so a bill that spans 1 July keeps the earlier
+year's prices (statistics.pricing_date), and past bills keep the prices that
+applied at the time.
 
 Every published figure below is GST-inclusive, as printed on the bill and in
 Watercare's annual price schedules. docs/tariffs.md lists the source for each
@@ -105,15 +106,6 @@ class TariffSchedule:
     def for_day(self, day: date) -> Tariff | None:
         """Return the tariff in force on a day."""
         return self.for_year(financial_year(day))
-
-    def best_known(self, year: int) -> Tariff:
-        """Return the tariff for a year, or the latest known one before it."""
-        candidate = year
-        while candidate >= FIRST_PUBLISHED_YEAR:
-            if (tariff := self.for_year(candidate)) is not None:
-                return tariff
-            candidate -= 1
-        return PUBLISHED_TARIFFS[FIRST_PUBLISHED_YEAR]
 
     def has_year(self, year: int) -> bool:
         """Return whether a year has a published or user-entered tariff."""

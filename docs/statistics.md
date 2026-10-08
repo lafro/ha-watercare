@@ -17,7 +17,7 @@ Each row is one Auckland calendar day, stamped at local midnight (always a whole
 
 ## What Watercare provides
 
-The customer-app API returns completed billing periods for mechanical meters: start date, end date, litres (whole kilolitres), Watercare's day count, reading type (estimate or actual) and some statistics. There is no in-progress period and no price data. Dates arrive as Auckland midnight expressed in UTC, so `2026-07-15T12:00:00.000Z` is 16 July in Auckland.
+The customer-app API returns completed billing periods for mechanical meters: start date, end date, litres (whole kilolitres), Watercare's day count, reading type (estimate or actual) and some statistics. There is no in-progress period and no price data. Dates arrive as Auckland midnight expressed in UTC, so `2026-07-02T12:00:00.000Z` is 3 July in Auckland.
 
 ## Spreading each bill over its days
 
@@ -25,7 +25,7 @@ Before 1.5.0 the whole bill was stamped on the hour after the period ended. In t
 
 From 1.5.0 each bill is spread evenly over the days it covers:
 
-- A bill covers its start date to its end date, inclusive. Watercare counts both ends too (16 June to 16 July is 31 days).
+- A bill covers its start date to its end date, inclusive. Watercare counts both ends too (3 June to 3 July is 31 days).
 - Bills never share a day. If a bill starts on or before the previous bill's end date, it starts the day after instead. This holds whichever way Watercare dates consecutive bills (the next bill starting the day after, or on the same day as, the previous one ended), and keeps every litre counted once.
 - A gap between bills (for example a meter change) gets no rows.
 - The split is exact: each bill's daily rows add up to the bill, using shares rounded to a billionth of a litre so rounding never accumulates.
@@ -49,7 +49,9 @@ Consequences:
 
 ## Costs at the tariff in force
 
-Each day is priced with that day's financial-year tariff ([tariffs.md](tariffs.md)). If no tariff is known for a day (a new financial year the release does not yet carry and the user has not entered), the cost statistics stop at the day before, and resume from that day once a tariff exists. The consumption statistic is unaffected. A repair notice asks for the prices of the earliest year that blocks the costs, or of the current year if it has none yet.
+Watercare charges each bill at the prices in force when its billing period starts, so the integration prices every day of a bill with the financial-year tariff of the bill's **start date** ([tariffs.md](tariffs.md#how-a-bill-is-priced)). A bill that spans 1 July keeps the earlier year's prices on all of its days, including the July ones, and a bill's daily cost rows add up to what Watercare charged for it. The **Last bill cost** sensor uses the same rows.
+
+If no tariff is known for the year a bill starts in (a new financial year the release does not yet carry and the user has not entered), the cost statistics stop before that bill's first day, and resume from that day once a tariff exists. The consumption statistic is unaffected. A repair notice asks for the prices of the earliest year that blocks the costs, or of the current year if it has none yet. Days already recorded are never repriced, so the options and the repair form never pre-fill prices for a year the integration does not know.
 
 ## The one-off rebuild (upgrade from 1.4.x)
 
@@ -60,7 +62,7 @@ Statistics written by 1.4.x have one row per bill and are priced at one flat tar
 3. imports the full history as daily rows from zero (`async_add_external_statistics`, the recorder API for external statistics; `async_import_statistics` is the equivalent for entity statistics);
 4. records the marker.
 
-Both steps run in the event loop and are queued on the recorder thread in order, so the import always follows the clear. Nothing runs SQL directly. The log shows a warning before and after the rebuild. It only touches the four `watercare:*` statistics and only runs after Watercare has returned at least one valid bill.
+Both steps run in the event loop and are queued on the recorder thread in order, so the import always follows the clear. Nothing runs SQL directly. The marker is recorded only after the import is queued: if the clear times out (after 5 minutes) or the import fails, the poll fails, the marker stays unset and the next attempt checks and rebuilds again. A partly imported history never holds more than the bills Watercare returns, so that check lets the rebuild run. `tests/test_init.py` covers both failures and the full upgrade from a 1.4.x entry. The log shows a warning before and after the rebuild. It only touches the four `watercare:*` statistics and only runs after Watercare has returned at least one valid bill.
 
 A new config entry also has no marker, so its first poll clears and re-imports these statistics too. That is harmless: the result is the same rows.
 
