@@ -1,217 +1,321 @@
-"""Tests for the Watercare config flow.
-
-WatercareApi (the network/auth layer) is mocked throughout -- these tests
-never touch the real Watercare API.
-"""
+"""Tests for the config, reauth, reconfigure and options flows."""
 
 from __future__ import annotations
 
-import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from collections.abc import Generator
+from unittest.mock import AsyncMock, patch
 
+import pytest
+from freezegun.api import FrozenDateTimeFactory
 from homeassistant.config_entries import SOURCE_USER
+from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
+from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 
-from custom_components.watercare.api import WatercareAuthError
-from custom_components.watercare.const import (
-    CONF_ANNUAL_LINE_CHARGE,
-    CONF_CONSUMPTION_RATE,
-    CONF_ENDPOINT,
-    CONF_WASTEWATER_RATE,
-    CONF_WASTEWATER_RATIO,
-    DEFAULT_ANNUAL_LINE_CHARGE,
-    DEFAULT_CONSUMPTION_RATE,
-    DEFAULT_WASTEWATER_RATE,
-    DEFAULT_WASTEWATER_RATIO,
-    DOMAIN,
+from custom_components.watercare.api import (
+    WatercareApi,
+    WatercareAuthError,
+    WatercareConnectionError,
 )
+from custom_components.watercare.config_flow import (
+    async_validate_login,
+    store_year_prices,
+)
+from custom_components.watercare.const import DOMAIN
+from custom_components.watercare.models import AccountSummary
 
-USER_INPUT = {
-    "username": "test@example.com",
-    "password": "hunter2",
-}
+from .common import ACCOUNT_NUMBER, ACCOUNT_PAYLOAD, EMAIL, PASSWORD, make_entry
 
-# A minimal-but-valid mechanicalmonthly billing-period payload. Needed
-# because a successful config flow schedules a real async_setup_entry as a
-# background task -- if that ever runs (e.g. during fixture teardown) with
-# no usable response, the coordinator's first refresh raises UpdateFailed.
-_VALID_BILLING_PERIODS = json.dumps(
+ACCOUNT = AccountSummary.from_json(ACCOUNT_PAYLOAD)
+OTHER_ACCOUNT = AccountSummary.from_json([{"accountNumber": "2000002-02"}])
+
+
+@pytest.fixture
+def mock_login() -> Generator[AsyncMock]:
+    with patch(
+        "custom_components.watercare.config_flow.async_validate_login",
+        return_value=(ACCOUNT, "new-refresh-token"),
+    ) as login:
+        yield login
+
+
+@pytest.fixture
+def mock_setup() -> Generator[AsyncMock]:
+    with patch(
+        "custom_components.watercare.async_setup_entry", return_value=True
+    ) as setup:
+        yield setup
+
+
+async def test_user_flow_creates_entry(
+    ha: HomeAssistant, mock_login: AsyncMock, mock_setup: AsyncMock
+) -> None:
+    result = await ha.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_USER}
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "user"
+
+    result = await ha.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_USERNAME: EMAIL, CONF_PASSWORD: PASSWORD}
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["title"] == "Watercare"
+    assert result["data"] == {
+        CONF_USERNAME: EMAIL,
+        CONF_PASSWORD: PASSWORD,
+        "refresh_token": "new-refresh-token",
+    }
+    assert result["options"] == {"wastewater_ratio": 0.785}
+    assert result["result"].unique_id == ACCOUNT_NUMBER
+    assert result["result"].minor_version == 2
+    mock_setup.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    ("error", "reason"),
     [
-        {
-            "billingPeriodFromDate": "2026-07-01T00:00:00.000Z",
-            "billingPeriodToDate": "2026-07-31T00:00:00.000Z",
-            "waterUsage": 10000,
-            "readingType": "A",
-            "statistics": {"numberOfDays": 31, "dailyAverage": 322.6},
-        }
-    ]
+        (WatercareAuthError("no"), "invalid_auth"),
+        (WatercareConnectionError("down"), "cannot_connect"),
+        (RuntimeError("bug"), "unknown"),
+    ],
 )
+async def test_user_flow_errors_then_recovers(
+    ha: HomeAssistant,
+    mock_login: AsyncMock,
+    mock_setup: AsyncMock,
+    error: Exception,
+    reason: str,
+) -> None:
+    mock_login.side_effect = error
+    result = await ha.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_USER}
+    )
+    result = await ha.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_USERNAME: EMAIL, CONF_PASSWORD: PASSWORD}
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": reason}
+
+    mock_login.side_effect = None
+    mock_login.return_value = (ACCOUNT, None)
+    result = await ha.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_USERNAME: EMAIL, CONF_PASSWORD: PASSWORD}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert "refresh_token" not in result["data"]
 
 
-def _mock_api(account_number: str = "123456") -> MagicMock:
-    """A WatercareApi stand-in that "authenticates" successfully.
+async def test_user_flow_rejects_a_duplicate_account(
+    ha: HomeAssistant, mock_login: AsyncMock, mock_setup: AsyncMock
+) -> None:
+    make_entry().add_to_hass(ha)
+    result = await ha.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_USER}
+    )
+    result = await ha.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_USERNAME: EMAIL, CONF_PASSWORD: PASSWORD}
+    )
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "already_configured"
 
-    Also stands in for the *second*, independent WatercareApi instantiation
-    that __init__.py's async_setup_entry makes for the coordinator, since a
-    successful flow schedules that setup as a background task.
-    """
-    api = MagicMock()
-    api.get_refresh_token = AsyncMock()
-    api.get_data = AsyncMock(return_value=_VALID_BILLING_PERIODS)
-    api.account_number = account_number
-    api.account = {"accountNumber": account_number}
-    return api
 
+async def test_reauth_updates_the_password(
+    ha: HomeAssistant, mock_login: AsyncMock, mock_setup: AsyncMock
+) -> None:
+    entry = make_entry()
+    entry.add_to_hass(ha)
 
-def _patch_watercare_api(mock_api: MagicMock):
-    """Patch WatercareApi everywhere it gets instantiated: config_flow's own
-    login check, and __init__.py's setup of the coordinator that follows a
-    successful flow."""
-    return (
-        patch(
-            "custom_components.watercare.config_flow.WatercareApi",
-            return_value=mock_api,
-        ),
-        patch(
-            "custom_components.watercare.WatercareApi",
-            return_value=mock_api,
-        ),
+    result = await entry.start_reauth_flow(ha)
+    assert result["step_id"] == "reauth_confirm"
+    assert result["description_placeholders"]["username"] == EMAIL
+
+    result = await ha.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_PASSWORD: "changed-password"}
     )
 
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reauth_successful"
+    assert entry.data[CONF_PASSWORD] == "changed-password"
+    assert entry.data["refresh_token"] == "new-refresh-token"
+    mock_login.assert_awaited_with(ha, EMAIL, "changed-password")
 
-async def test_successful_setup_creates_entry_with_fixed_endpoint(
-    recorder_mock, enable_custom_integrations, hass
+
+async def test_reauth_error_and_wrong_account(
+    ha: HomeAssistant, mock_login: AsyncMock, mock_setup: AsyncMock
 ) -> None:
-    mock_api = _mock_api(account_number="987654")
-    patch_flow, patch_init = _patch_watercare_api(mock_api)
+    entry = make_entry()
+    entry.add_to_hass(ha)
+    result = await entry.start_reauth_flow(ha)
 
-    with patch_flow, patch_init:
-        result = await hass.config_entries.flow.async_init(
-            DOMAIN, context={"source": SOURCE_USER}
-        )
-        assert result["type"] == FlowResultType.FORM
-        assert result["step_id"] == "user"
+    mock_login.side_effect = WatercareAuthError("no")
+    result = await ha.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_PASSWORD: "wrong"}
+    )
+    assert result["errors"] == {"base": "invalid_auth"}
 
-        result2 = await hass.config_entries.flow.async_configure(
-            result["flow_id"], USER_INPUT
-        )
-        await hass.async_block_till_done()
-
-    assert result2["type"] == FlowResultType.CREATE_ENTRY
-    entry = result2["result"]
-    assert entry.unique_id == "987654"
-    assert entry.data["username"] == "test@example.com"
-    assert entry.data["password"] == "hunter2"
-
-    # The endpoint is fixed to mechanicalmonthly regardless of user input --
-    # it is not exposed as a choice in DATA_SCHEMA at all.
-    assert entry.options[CONF_ENDPOINT] == "mechanicalmonthly"
-    assert entry.options[CONF_CONSUMPTION_RATE] == DEFAULT_CONSUMPTION_RATE
-    assert entry.options[CONF_WASTEWATER_RATE] == DEFAULT_WASTEWATER_RATE
-    assert entry.options[CONF_WASTEWATER_RATIO] == DEFAULT_WASTEWATER_RATIO
-    assert entry.options[CONF_ANNUAL_LINE_CHARGE] == DEFAULT_ANNUAL_LINE_CHARGE
+    mock_login.side_effect = None
+    mock_login.return_value = (OTHER_ACCOUNT, None)
+    result = await ha.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_PASSWORD: "other"}
+    )
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "wrong_account"
+    assert entry.data[CONF_PASSWORD] == PASSWORD
 
 
-async def test_custom_rates_are_written_into_options(
-    recorder_mock, enable_custom_integrations, hass
+async def test_reauth_of_an_entry_without_unique_id(
+    ha: HomeAssistant, mock_login: AsyncMock, mock_setup: AsyncMock
 ) -> None:
-    mock_api = _mock_api(account_number="111222")
-    patch_flow, patch_init = _patch_watercare_api(mock_api)
+    entry = make_entry(unique_id=None)
+    entry.add_to_hass(ha)
+    result = await entry.start_reauth_flow(ha)
 
-    with patch_flow, patch_init:
-        result = await hass.config_entries.flow.async_init(
-            DOMAIN, context={"source": SOURCE_USER}
-        )
-        result2 = await hass.config_entries.flow.async_configure(
-            result["flow_id"],
-            {
-                **USER_INPUT,
-                CONF_CONSUMPTION_RATE: 2.5,
-                CONF_WASTEWATER_RATE: 4.1,
-                CONF_WASTEWATER_RATIO: 0.8,
-                CONF_ANNUAL_LINE_CHARGE: 350,
-            },
-        )
-        await hass.async_block_till_done()
-
-    entry = result2["result"]
-    assert entry.options[CONF_CONSUMPTION_RATE] == 2.5
-    assert entry.options[CONF_WASTEWATER_RATE] == 4.1
-    assert entry.options[CONF_WASTEWATER_RATIO] == 0.8
-    assert entry.options[CONF_ANNUAL_LINE_CHARGE] == 350
-    # Still fixed even when the user supplies other overrides.
-    assert entry.options[CONF_ENDPOINT] == "mechanicalmonthly"
-
-
-async def test_invalid_credentials_show_invalid_auth_error(
-    recorder_mock, enable_custom_integrations, hass
-) -> None:
-    mock_api = MagicMock()
-    mock_api.get_refresh_token = AsyncMock(
-        side_effect=WatercareAuthError("bad credentials")
+    result = await ha.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_PASSWORD: "changed-password"}
     )
 
-    with patch(
-        "custom_components.watercare.config_flow.WatercareApi", return_value=mock_api
-    ):
-        result = await hass.config_entries.flow.async_init(
-            DOMAIN, context={"source": SOURCE_USER}
-        )
-        result2 = await hass.config_entries.flow.async_configure(
-            result["flow_id"], USER_INPUT
-        )
-
-    assert result2["type"] == FlowResultType.FORM
-    assert result2["step_id"] == "user"
-    assert result2["errors"] == {"base": "invalid_auth"}
+    assert result["reason"] == "reauth_successful"
 
 
-async def test_second_setup_of_same_account_aborts_already_configured(
-    recorder_mock, enable_custom_integrations, hass
+async def test_reconfigure_changes_the_login(
+    ha: HomeAssistant, mock_login: AsyncMock, mock_setup: AsyncMock
 ) -> None:
-    mock_api = _mock_api(account_number="555555")
-    patch_flow, patch_init = _patch_watercare_api(mock_api)
+    entry = make_entry()
+    entry.add_to_hass(ha)
 
-    with patch_flow, patch_init:
-        first = await hass.config_entries.flow.async_init(
-            DOMAIN, context={"source": SOURCE_USER}
-        )
-        first_result = await hass.config_entries.flow.async_configure(
-            first["flow_id"], USER_INPUT
-        )
-        assert first_result["type"] == FlowResultType.CREATE_ENTRY
+    result = await entry.start_reconfigure_flow(ha)
+    assert result["step_id"] == "reconfigure"
 
-        second = await hass.config_entries.flow.async_init(
-            DOMAIN, context={"source": SOURCE_USER}
-        )
-        second_result = await hass.config_entries.flow.async_configure(
-            second["flow_id"], USER_INPUT
-        )
-        await hass.async_block_till_done()
+    result = await ha.config_entries.flow.async_configure(
+        result["flow_id"],
+        {CONF_USERNAME: "new@example.com", CONF_PASSWORD: "new-password"},
+    )
 
-    assert second_result["type"] == FlowResultType.ABORT
-    assert second_result["reason"] == "already_configured"
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    assert entry.data[CONF_USERNAME] == "new@example.com"
+    assert entry.data[CONF_PASSWORD] == "new-password"
+    assert entry.data["statistics_version"] == 2
 
 
-async def test_no_account_returned_shows_cannot_connect(
-    recorder_mock, enable_custom_integrations, hass
+async def test_reconfigure_errors_and_wrong_account(
+    ha: HomeAssistant, mock_login: AsyncMock, mock_setup: AsyncMock
 ) -> None:
-    """Sign-in succeeds but Watercare returns no account -- treat as a
-    connection problem, not a silent success."""
-    mock_api = MagicMock()
-    mock_api.get_refresh_token = AsyncMock()
-    mock_api.account_number = None
-    mock_api.account = None
+    entry = make_entry()
+    entry.add_to_hass(ha)
+    result = await entry.start_reconfigure_flow(ha)
 
-    with patch(
-        "custom_components.watercare.config_flow.WatercareApi", return_value=mock_api
+    mock_login.side_effect = WatercareConnectionError("down")
+    result = await ha.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_USERNAME: EMAIL, CONF_PASSWORD: PASSWORD}
+    )
+    assert result["errors"] == {"base": "cannot_connect"}
+
+    mock_login.side_effect = None
+    mock_login.return_value = (OTHER_ACCOUNT, None)
+    result = await ha.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_USERNAME: EMAIL, CONF_PASSWORD: PASSWORD}
+    )
+    assert result["reason"] == "wrong_account"
+
+
+async def test_options_flow_prefills_and_stores_only_differences(
+    ha: HomeAssistant, mock_setup: AsyncMock, freezer: FrozenDateTimeFactory
+) -> None:
+    freezer.move_to("2026-10-08T00:00:00+13:00")
+    entry = make_entry()
+    entry.add_to_hass(ha)
+
+    result = await ha.config_entries.options.async_init(entry.entry_id)
+    assert result["type"] is FlowResultType.FORM
+    assert result["description_placeholders"] == {"financial_year": "2026/27"}
+    suggested = {
+        str(key): key.description["suggested_value"]  # type: ignore[index]
+        for key in result["data_schema"].schema
+    }
+    assert suggested == {
+        "wastewater_ratio": 0.785,
+        "water_rate": 2.46,
+        "wastewater_rate": 4.28,
+        "fixed_charge": 355.9,
+    }
+
+    # Published prices: nothing extra is stored.
+    result = await ha.config_entries.options.async_configure(
+        result["flow_id"], {**suggested, "wastewater_ratio": 0.95}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.options == {"wastewater_ratio": 0.95}
+
+    # Different prices: stored for this financial year only.
+    result = await ha.config_entries.options.async_init(entry.entry_id)
+    result = await ha.config_entries.options.async_configure(
+        result["flow_id"], {**suggested, "water_rate": 2.5}
+    )
+    assert entry.options == {
+        "wastewater_ratio": 0.785,
+        "tariff_overrides": {
+            "2026": {"water_rate": 2.5, "wastewater_rate": 4.28, "fixed_charge": 355.9}
+        },
+    }
+
+
+def test_store_year_prices_removes_an_override_matching_the_table() -> None:
+    options = {
+        "wastewater_ratio": 0.785,
+        "tariff_overrides": {
+            "2026": {"water_rate": 2.5, "wastewater_rate": 4.28, "fixed_charge": 355.9},
+            "2027": {"water_rate": 3.0, "wastewater_rate": 5.0, "fixed_charge": 400.0},
+        },
+    }
+    published = {"water_rate": 2.46, "wastewater_rate": 4.28, "fixed_charge": 355.9}
+
+    result = store_year_prices(options, 2026, published)
+
+    assert result == {
+        "wastewater_ratio": 0.785,
+        "tariff_overrides": {
+            "2027": {"water_rate": 3.0, "wastewater_rate": 5.0, "fixed_charge": 400.0}
+        },
+    }
+    assert store_year_prices({"tariff_overrides": {}}, 2026, published) == {}
+
+
+async def test_validate_login_signs_in_and_reads_the_account(ha: HomeAssistant) -> None:
+    async def _sign_in(self: WatercareApi) -> None:
+        self._refresh_token = "issued"
+
+    async def _account(self: WatercareApi) -> AccountSummary:
+        assert ACCOUNT is not None
+        return ACCOUNT
+
+    with (
+        patch.object(
+            WatercareApi, "async_sign_in", autospec=True, side_effect=_sign_in
+        ),
+        patch.object(
+            WatercareApi, "async_get_account", autospec=True, side_effect=_account
+        ),
     ):
-        result = await hass.config_entries.flow.async_init(
-            DOMAIN, context={"source": SOURCE_USER}
-        )
-        result2 = await hass.config_entries.flow.async_configure(
-            result["flow_id"], USER_INPUT
-        )
+        account, token = await async_validate_login(ha, EMAIL, PASSWORD)
 
-    assert result2["type"] == FlowResultType.FORM
-    assert result2["errors"] == {"base": "cannot_connect"}
+    assert account == ACCOUNT
+    assert token == "issued"
+
+
+async def test_reconfigure_without_unique_id_or_refresh_token(
+    ha: HomeAssistant, mock_login: AsyncMock, mock_setup: AsyncMock
+) -> None:
+    entry = make_entry(unique_id=None)
+    entry.add_to_hass(ha)
+    mock_login.return_value = (ACCOUNT, None)
+    result = await entry.start_reconfigure_flow(ha)
+
+    result = await ha.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_USERNAME: EMAIL, CONF_PASSWORD: "new-password"}
+    )
+
+    assert result["reason"] == "reconfigure_successful"
+    assert "refresh_token" not in entry.data

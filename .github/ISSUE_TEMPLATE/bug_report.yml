@@ -1,0 +1,66 @@
+name: Bug report
+description: Report a reproducible problem with the Watercare integration
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve the integration. Search existing issues first.
+
+        **Privacy warning:** do not paste email addresses, passwords, tokens, account or meter numbers, addresses, balances, usage or cost figures, or unreviewed logs or diagnostics into a public issue.
+  - type: input
+    id: version
+    attributes:
+      label: Integration version
+      placeholder: 1.5.0
+    validations:
+      required: true
+  - type: input
+    id: ha_version
+    attributes:
+      label: Home Assistant version
+      placeholder: 2026.10.0
+    validations:
+      required: true
+  - type: dropdown
+    id: meter
+    attributes:
+      label: Meter type
+      options:
+        - Mechanical (read about monthly)
+        - Smart meter
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the expected and actual behaviour without personal or usage data.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. …
+        2. …
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Redacted logs or diagnostics
+      description: Review every line before pasting. Remove any personal, credential, account, meter, address, balance, usage or cost data.
+      render: text
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy confirmation
+      options:
+        - label: I reviewed the content above and removed all personal, credential and usage data.
+          required: true
+        - label: I am not reporting a security vulnerability. Security issues belong in a private vulnerability report.
+          required: true

@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "deny": [
+      "mcp__ha-mcp",
+      "mcp__home-assistant",
+      "Bash(gh release delete:*)",
+      "Bash(gh release edit:*)",
+      "Bash(git tag -d:*)",
+      "Bash(git push --delete:*)",
+      "Bash(git push origin --delete:*)",
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
+      "Bash(gh api -X DELETE:*)",
+      "Bash(gh api --method DELETE:*)",
+      "Bash(gh repo delete:*)"
+    ]
+  }
+}

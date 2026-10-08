@@ -1,8 +1,9 @@
-"""Watercare custom integration."""
+"""The Watercare integration."""
 
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
@@ -10,101 +11,174 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.util import dt as dt_util
 
 from .api import WatercareApi
 from .const import (
-    DOMAIN,
-    CONF_CONSUMPTION_RATE,
+    CONF_FIXED_CHARGE,
+    CONF_REFRESH_TOKEN,
+    CONF_TARIFF_OVERRIDES,
     CONF_WASTEWATER_RATE,
     CONF_WASTEWATER_RATIO,
-    CONF_ANNUAL_LINE_CHARGE,
-    CONF_ENDPOINT,
-    DEFAULT_CONSUMPTION_RATE,
-    DEFAULT_WASTEWATER_RATE,
+    CONF_WATER_RATE,
     DEFAULT_WASTEWATER_RATIO,
-    DEFAULT_ANNUAL_LINE_CHARGE,
-    DEFAULT_ENDPOINT,
+    DOMAIN,
+    LEGACY_ANNUAL_LINE_CHARGE,
+    LEGACY_CONSUMPTION_RATE,
+    LEGACY_EMAIL,
+    LEGACY_ENDPOINT,
+    LEGACY_WASTEWATER_RATE,
+    NZ_TIMEZONE,
+    PLATFORMS,
 )
 from .coordinator import WatercareCoordinator
+from .tariffs import financial_year, financial_year_label, matching_published_year
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = [Platform.SENSOR]
-
 type WatercareConfigEntry = ConfigEntry[WatercareCoordinator]
+
+_LEGACY_KEYS = (
+    LEGACY_CONSUMPTION_RATE,
+    LEGACY_WASTEWATER_RATE,
+    LEGACY_ANNUAL_LINE_CHARGE,
+    LEGACY_ENDPOINT,
+    CONF_WASTEWATER_RATIO,
+    LEGACY_EMAIL,
+)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: WatercareConfigEntry) -> bool:
     """Set up Watercare from a config entry."""
-
-    # Entries created before v1.2.2 stored the login under "email".
-    email = entry.data.get(CONF_USERNAME) or entry.data.get("email")
+    username = entry.data.get(CONF_USERNAME)
     password = entry.data.get(CONF_PASSWORD)
+    if not username or not password:
+        raise ConfigEntryError(
+            translation_domain=DOMAIN, translation_key="missing_credentials"
+        )
 
-    if not email or not password:
-        raise ConfigEntryError("Config entry is missing the username or password")
+    @callback
+    def _async_store_refresh_token(token: str) -> None:
+        hass.config_entries.async_update_entry(
+            entry, data={**entry.data, CONF_REFRESH_TOKEN: token}
+        )
 
-    api = WatercareApi(email, password, session=async_get_clientsession(hass))
-
-    # Options (saved from the options flow) override initial setup data.
-    config = {**entry.data, **entry.options}
-    coordinator = WatercareCoordinator(
-        hass,
-        entry,
-        api,
-        config.get(CONF_CONSUMPTION_RATE, DEFAULT_CONSUMPTION_RATE),
-        config.get(CONF_WASTEWATER_RATE, DEFAULT_WASTEWATER_RATE),
-        config.get(CONF_WASTEWATER_RATIO, DEFAULT_WASTEWATER_RATIO),
-        config.get(CONF_ANNUAL_LINE_CHARGE, DEFAULT_ANNUAL_LINE_CHARGE),
-        config.get(CONF_ENDPOINT, DEFAULT_ENDPOINT),
+    api = WatercareApi(
+        username,
+        password,
+        async_get_clientsession(hass),
+        refresh_token=entry.data.get(CONF_REFRESH_TOKEN),
+        token_callback=_async_store_refresh_token,
     )
+    coordinator = WatercareCoordinator(hass, entry, api)
 
-    _async_migrate_unique_id(hass, entry)
+    _async_migrate_entities(hass, entry)
 
     await coordinator.async_config_entry_first_refresh()
 
-    # Entries created before v1.2.2 have no unique id; backfill the account
-    # number so duplicate accounts are refused from now on.
-    if entry.unique_id is None and api.account_number:
-        hass.config_entries.async_update_entry(
-            entry, unique_id=str(api.account_number)
-        )
+    # Entries created before 1.2.2 have no unique id; use the account number
+    # so the same account cannot be added twice.
+    account = coordinator.data.account
+    if entry.unique_id is None and account is not None:
+        hass.config_entries.async_update_entry(entry, unique_id=account.account_number)
 
     entry.runtime_data = coordinator
-
-    # Reload the entry whenever options change so new rates apply immediately.
-    entry.async_on_unload(entry.add_update_listener(_async_options_updated))
-
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-
     return True
 
 
-@callback
-def _async_migrate_unique_id(hass: HomeAssistant, entry: WatercareConfigEntry) -> None:
-    """Move a pre-1.2.2 entity to the entry-scoped unique id.
+async def async_unload_entry(hass: HomeAssistant, entry: WatercareConfigEntry) -> bool:
+    """Unload a config entry."""
+    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
-    The original sensor used the bare domain string as its unique id. Updating
-    the registry entry in place keeps the entity id and all recorded history.
+
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Migrate entries from 1.4.x (version 1.1) to version 1.2.
+
+    1.4.x stored one flat tariff in the options and priced all history with
+    it. 1.5.0 uses Watercare's published prices per financial year, so the
+    flat tariff is dropped when it equals a published year (which is what a
+    user copies off a bill), and kept as the current year's figures
+    otherwise.
+    """
+    if entry.version > 1:
+        # A newer release created this entry; refuse to guess.
+        return False
+    if entry.minor_version >= 2:  # noqa: PLR2004
+        return True
+
+    legacy: dict[str, Any] = {**entry.data, **entry.options}
+    options: dict[str, Any] = {
+        CONF_WASTEWATER_RATIO: _number(
+            legacy.get(CONF_WASTEWATER_RATIO), DEFAULT_WASTEWATER_RATIO
+        )
+    }
+    rates = (
+        legacy.get(LEGACY_CONSUMPTION_RATE),
+        legacy.get(LEGACY_WASTEWATER_RATE),
+        legacy.get(LEGACY_ANNUAL_LINE_CHARGE),
+    )
+    if all(_is_number(rate) for rate in rates):
+        water, wastewater, fixed = (float(rate) for rate in rates)  # type: ignore[arg-type]
+        published = matching_published_year(water, wastewater, fixed)
+        if published is not None:
+            _LOGGER.info(
+                "Watercare: the configured rates match the published %s prices; "
+                "using the published price table for every year",
+                financial_year_label(published),
+            )
+        else:
+            year = financial_year(dt_util.now(NZ_TIMEZONE).date())
+            options[CONF_TARIFF_OVERRIDES] = {
+                str(year): {
+                    CONF_WATER_RATE: water,
+                    CONF_WASTEWATER_RATE: wastewater,
+                    CONF_FIXED_CHARGE: fixed,
+                }
+            }
+            _LOGGER.warning(
+                "Watercare: the configured rates match no published year; keeping "
+                "them as the %s prices. Check them in the integration options",
+                financial_year_label(year),
+            )
+
+    data = {key: value for key, value in entry.data.items() if key not in _LEGACY_KEYS}
+    if not data.get(CONF_USERNAME) and entry.data.get(LEGACY_EMAIL):
+        data[CONF_USERNAME] = entry.data[LEGACY_EMAIL]
+
+    hass.config_entries.async_update_entry(
+        entry, data=data, options=options, minor_version=2
+    )
+    _LOGGER.debug("Migrated the Watercare config entry to version 1.2")
+    return True
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, int | float) and not isinstance(value, bool)
+
+
+def _number(value: Any, default: float) -> float:
+    return float(value) if _is_number(value) else default
+
+
+@callback
+def _async_migrate_entities(hass: HomeAssistant, entry: WatercareConfigEntry) -> None:
+    """Carry entity-registry fixes from earlier releases.
+
+    * Before 1.2.2 the usage sensor's unique id was the bare domain. Moving it
+      to the entry-scoped id keeps the entity id and its history.
+    * 1.2.x shipped two sensors disabled by the integration while their data
+      was missing. Re-enable them, but never a sensor the user disabled.
     """
     registry = er.async_get(hass)
     legacy_entity_id = registry.async_get_entity_id(Platform.SENSOR, DOMAIN, DOMAIN)
     new_unique_id = f"{entry.entry_id}_usage"
-
     if legacy_entity_id and not registry.async_get_entity_id(
         Platform.SENSOR, DOMAIN, new_unique_id
     ):
-        _LOGGER.info(
-            "Migrating %s unique id from %r to %r",
-            legacy_entity_id,
-            DOMAIN,
-            new_unique_id,
-        )
+        _LOGGER.info("Moving %s to an entry-scoped unique id", legacy_entity_id)
         registry.async_update_entity(legacy_entity_id, new_unique_id=new_unique_id)
 
-    # These shipped disabled while they read from a payload that never carried
-    # them. They are populated now, so undo the disable we applied -- but only
-    # ours: a user-disabled entity records disabled_by "user" and is left be.
     for key in ("account_balance", "amount_due"):
         entity_id = registry.async_get_entity_id(
             Platform.SENSOR, DOMAIN, f"{entry.entry_id}_{key}"
@@ -113,17 +187,5 @@ def _async_migrate_unique_id(hass: HomeAssistant, entry: WatercareConfigEntry) -
             continue
         existing = registry.async_get(entity_id)
         if existing and existing.disabled_by is er.RegistryEntryDisabler.INTEGRATION:
-            _LOGGER.info("Re-enabling %s now that Watercare reports it", entity_id)
+            _LOGGER.info("Re-enabling %s", entity_id)
             registry.async_update_entity(entity_id, disabled_by=None)
-
-
-async def _async_options_updated(
-    hass: HomeAssistant, entry: WatercareConfigEntry
-) -> None:
-    """Handle options update."""
-    await hass.config_entries.async_reload(entry.entry_id)
-
-
-async def async_unload_entry(hass: HomeAssistant, entry: WatercareConfigEntry) -> bool:
-    """Unload a config entry."""
-    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)

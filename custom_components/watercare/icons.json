@@ -1,0 +1,39 @@
+{
+  "entity": {
+    "sensor": {
+      "last_bill_usage": {
+        "default": "mdi:water"
+      },
+      "last_bill_cost": {
+        "default": "mdi:cash"
+      },
+      "daily_average": {
+        "default": "mdi:water-percent"
+      },
+      "billing_period_end": {
+        "default": "mdi:calendar-end"
+      },
+      "payment_due_date": {
+        "default": "mdi:calendar-clock"
+      },
+      "reading_type": {
+        "default": "mdi:counter"
+      },
+      "efficiency_band": {
+        "default": "mdi:gauge"
+      },
+      "account_balance": {
+        "default": "mdi:scale-balance"
+      },
+      "amount_due": {
+        "default": "mdi:cash-clock"
+      },
+      "overdue_amount": {
+        "default": "mdi:cash-remove"
+      },
+      "meter_number": {
+        "default": "mdi:identifier"
+      }
+    }
+  }
+}

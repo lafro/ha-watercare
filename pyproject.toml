@@ -1,0 +1,73 @@
+[project]
+name = "ha-watercare"
+version = "1.5.0"
+description = "Unofficial Watercare (Auckland) integration for Home Assistant"
+readme = "README.md"
+requires-python = ">=3.14.2,<3.15"
+license = "MIT"
+
+[dependency-groups]
+dev = [
+  "homeassistant==2026.10.0",
+  "mypy>=1.18.0",
+  "pytest-homeassistant-custom-component==0.13.370",
+  "ruff>=0.16.0",
+]
+
+[tool.uv]
+package = false
+override-dependencies = [
+  # pytest-homeassistant-custom-component 0.13.370 pins the 2026.10.0b4 beta.
+  # Test against the 2026.10.0 release that production runs. Drop this once a
+  # harness release pins 2026.10.0 or later.
+  "homeassistant==2026.10.0",
+]
+
+[tool.pytest.ini_options]
+addopts = "--strict-config --strict-markers --cov=custom_components.watercare --cov-branch --cov-report=term-missing --cov-report=xml --cov-fail-under=95"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+
+[tool.coverage.report]
+exclude_also = [
+  "if TYPE_CHECKING:",
+  "raise NotImplementedError",
+]
+
+[tool.ruff]
+target-version = "py314"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+  "ANN401",
+  "D107",
+  "D203",
+  "D213",
+  "COM812",
+  "CPY001",
+  "EM101",
+  "EM102",
+  "FBT003",
+  "ISC001",
+  "PERF401",
+  "PLR0913",
+  "TC001",
+  "TC002",
+  "TC003",
+  "TRY003",
+  "TRY004",
+  "TRY301",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["ANN", "ARG001", "D", "FBT001", "INP001", "PLR2004", "S", "SLF001"]
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+show_error_codes = true

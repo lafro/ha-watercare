@@ -1,0 +1,46 @@
+# serializer version: 1
+# name: test_diagnostics_hold_no_identifiers
+  dict({
+    'config_entry': dict({
+      'data': dict({
+        'password': '**REDACTED**',
+        'refresh_token': '**REDACTED**',
+        'statistics_version': 2,
+        'username': '**REDACTED**',
+      }),
+      'minor_version': 2,
+      'tariff_override_years': list([
+        '2027/28',
+      ]),
+      'version': 1,
+      'wastewater_ratio': 0.785,
+    }),
+    'coordinator': dict({
+      'account_present': True,
+      'billing_periods': 3,
+      'duplicate_periods': 0,
+      'last_exception_type': None,
+      'last_import': dict({
+        'consumption_rows': 92,
+        'cost_rows': 276,
+        'first_day_without_tariff': None,
+        'rebuilt': False,
+      }),
+      'last_update_success': True,
+      'latest_cost_available': True,
+      'latest_period': dict({
+        'end': '2026-09-15',
+        'number_of_days': 30,
+        'reading_type': 'E',
+        'start': '2026-08-17',
+      }),
+      'meter_type': 'mechanical',
+      'missing_tariff_year': None,
+      'skipped_periods': 0,
+      'statistics_status': 'current',
+    }),
+    'tariffs': dict({
+      'latest_published_year': '2026/27',
+    }),
+  })
+# ---

@@ -1,399 +1,366 @@
-"""Watercare API."""
+"""Client for the Watercare customer-app API.
 
-import aiohttp
-import logging
-from typing import Any
-from collections.abc import Mapping
-import json
-import secrets
-import hashlib
+Sign-in uses Azure AD B2C with PKCE and the self-asserted (email and
+password) flow, the only credential path Watercare's tenant offers. That flow
+needs its own cookie jar, so it runs in a short-lived private session. All
+other calls use the session Home Assistant provides.
+
+A refresh token is kept and handed to ``token_callback`` whenever it changes,
+so Home Assistant can store it and later restarts resume with a token refresh
+instead of a full sign-in.
+
+Logging never includes credentials, tokens, account or meter identifiers,
+URLs that contain them, or response bodies.
+"""
+
+from __future__ import annotations
+
 import base64
+import hashlib
+import json
+import logging
+import secrets
 import time
 import uuid
-from urllib.parse import parse_qs
+from collections.abc import Callable, Mapping
+from typing import Any, Final
+from urllib.parse import parse_qs, quote
+
+import aiohttp
+
+from .models import AccountSummary
 
 _LOGGER = logging.getLogger(__name__)
 
+_CLIENT_ID: Final = "799c26af-c35b-4010-bd04-b6a7ebdba811"
+_REDIRECT_URI: Final = "msauth://nz.co.watercare/yRDm0vmCd9zdnwt1eCLGp8KfdLY%3D"
+_API_BASE: Final = "https://customerapp.api.water.co.nz/"
+_B2C_BASE: Final = "https://wslpwb2cprd.b2clogin.com/tfp/wslpwb2cprd.onmicrosoft.com"
+_POLICY: Final = "B2C_1_sign_up_or_sign_in_mobile"
+_SCOPE: Final = f"{_CLIENT_ID} openid offline_access profile"
+_SETTINGS_PREFIX: Final = "var SETTINGS = "
+_TOKEN_EXPIRY_MARGIN: Final = 60
+_REDIRECT_STATUSES: Final = frozenset({200, 301, 302, 307, 308})
+_HTTP_OK: Final = 200
+_HTTP_UNAUTHORIZED: Final = 401
+_TIMEOUT: Final = aiohttp.ClientTimeout(total=60)
 
-class WatercareAuthError(Exception):
-    """Raised when Watercare rejects the credentials or sign-in flow."""
+
+class WatercareError(Exception):
+    """Base class for Watercare client errors."""
 
 
-class WatercareConnectionError(Exception):
-    """Raised for transient/connection problems that are not a credentials issue.
+class WatercareAuthError(WatercareError):
+    """Watercare rejected the credentials or the sign-in flow."""
 
-    E.g. sign-in succeeded but the account record could not be fetched. This
-    must not trigger Home Assistant's reauth flow, since the user's
-    credentials are not at fault.
+
+class WatercareConnectionError(WatercareError):
+    """A transient or service problem that is not a credentials problem.
+
+    Home Assistant must not start reauthentication for these.
     """
 
 
+def _code_verifier() -> str:
+    return secrets.token_urlsafe(100)[:128]
+
+
+def _code_challenge(verifier: str) -> str:
+    digest = hashlib.sha256(verifier.encode()).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+
+
+def _default_sign_in_session() -> aiohttp.ClientSession:
+    return aiohttp.ClientSession(
+        cookie_jar=aiohttp.CookieJar(quote_cookie=False), timeout=_TIMEOUT
+    )
+
+
+def parse_settings(page: str) -> Mapping[str, Any] | None:
+    """Read the ``var SETTINGS = {...};`` object B2C embeds in its login page.
+
+    It is a Microsoft B2C platform bootstrap object, not Watercare markup.
+    """
+    for line in page.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(_SETTINGS_PREFIX) and stripped.endswith(";"):
+            try:
+                value = json.loads(
+                    stripped.removeprefix(_SETTINGS_PREFIX).removesuffix(";")
+                )
+            except json.JSONDecodeError:
+                return None
+            return value if isinstance(value, dict) else None
+    return None
+
+
 class WatercareApi:
-    """Define the Watercare API."""
+    """Watercare customer-app API client."""
 
-    def __init__(self, email, password, session: aiohttp.ClientSession | None = None):
-        """Initialise the API.
+    def __init__(
+        self,
+        email: str,
+        password: str,
+        session: aiohttp.ClientSession,
+        *,
+        refresh_token: str | None = None,
+        token_callback: Callable[[str], None] | None = None,
+        sign_in_session: Callable[[], aiohttp.ClientSession] | None = None,
+    ) -> None:
+        """Initialise the client.
 
-        session is an optional shared aiohttp session used for plain API
-        calls. The B2C sign-in dance always builds its own session because it
-        depends on cookies that must not leak into a shared jar.
+        ``sign_in_session`` creates the private session for the B2C sign-in;
+        by default a plain aiohttp session with its own cookie jar, as the
+        flow has always used.
         """
-        self._client_id = "799c26af-c35b-4010-bd04-b6a7ebdba811"
-        self._redirect_uri = "msauth://nz.co.watercare/yRDm0vmCd9zdnwt1eCLGp8KfdLY%3D"
-        self._url_base = "https://customerapp.api.water.co.nz/"
-        self._url_token_base = (
-            "https://wslpwb2cprd.b2clogin.com/tfp/wslpwb2cprd.onmicrosoft.com"
-        )
-        self._p = "B2C_1_sign_up_or_sign_in_mobile"
-
+        self._sign_in_session = sign_in_session or _default_sign_in_session
         self._email = email
         self._password = password
         self._session = session
-
-        self._accountNumber = None
-        self._account: dict | None = None
-        self._token = None
-        self._refresh_token = None
-        self._refresh_token_expires_in = 0
-        self._access_token_expires_in = 0
+        self._refresh_token = refresh_token
+        self._token_callback = token_callback
+        self._access_token: str | None = None
         self._access_token_expires_at = 0.0
+        self._account: AccountSummary | None = None
 
     @property
-    def account_number(self):
-        """Return the Watercare account number, once known."""
-        return self._accountNumber
-
-    @property
-    def account(self) -> dict | None:
-        """Return the most recent v1/account record for this account."""
+    def account(self) -> AccountSummary | None:
+        """Return the most recent account summary."""
         return self._account
 
-    def _api_session(self) -> tuple[aiohttp.ClientSession, bool]:
-        """Return (session, owned) for plain API calls."""
-        if self._session is not None and not self._session.closed:
-            return self._session, False
-        return aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(quote_cookie=False)), True
+    @property
+    def refresh_token(self) -> str | None:
+        """Return the current refresh token."""
+        return self._refresh_token
 
-    def _access_token_is_expired(self) -> bool:
-        """Return whether the access token is missing or near expiry."""
-        return not self._token or time.monotonic() >= self._access_token_expires_at
+    def _access_token_valid(self) -> bool:
+        return (
+            self._access_token is not None
+            and time.monotonic() < self._access_token_expires_at
+        )
 
-    def get_setting_json(self, page: str) -> Mapping[str, Any] | None:
-        """Get the settings from json result."""
-        for line in page.splitlines():
-            if line.startswith("var SETTINGS = ") and line.endswith(";"):
-                json_string = line.removeprefix("var SETTINGS = ").removesuffix(";")
-                return json.loads(json_string)
-        return None
+    def _store_tokens(self, payload: Mapping[str, Any]) -> None:
+        access_token = payload.get("access_token")
+        if not isinstance(access_token, str) or not access_token:
+            raise WatercareAuthError("Watercare returned no access token")
+        self._access_token = access_token
+        expires_in = payload.get("expires_in")
+        try:
+            lifetime = int(expires_in) if expires_in is not None else 0
+        except TypeError, ValueError:
+            lifetime = 0
+        self._access_token_expires_at = time.monotonic() + max(
+            lifetime - _TOKEN_EXPIRY_MARGIN, 0
+        )
+        refresh_token = payload.get("refresh_token")
+        if (
+            isinstance(refresh_token, str)
+            and refresh_token
+            and refresh_token != self._refresh_token
+        ):
+            self._refresh_token = refresh_token
+            if self._token_callback is not None:
+                self._token_callback(refresh_token)
 
-    def generate_code_verifier(self):
-        """Generate code verifier for OAuth steps."""
-        code_verifier = secrets.token_urlsafe(100)
-        return code_verifier[:128]
+    async def async_sign_in(self) -> None:
+        """Sign in with the email and password (B2C self-asserted flow)."""
+        _LOGGER.debug("Signing in to Watercare")
+        try:
+            async with self._sign_in_session() as session:
+                await self._async_sign_in(session)
+        except (aiohttp.ClientError, TimeoutError) as err:
+            raise WatercareConnectionError(
+                f"Could not reach Watercare sign-in: {type(err).__name__}"
+            ) from err
 
-    def generate_code_challenge(self, code_verifier):
-        """Generate code challenge for OAuth steps."""
-        code_challenge = hashlib.sha256(code_verifier.encode()).digest()
-        return base64.urlsafe_b64encode(code_challenge).rstrip(b"=").decode()
+    async def _async_sign_in(self, session: aiohttp.ClientSession) -> None:
+        verifier = _code_verifier()
+        request_id = str(uuid.uuid4())
+        authorize = {
+            "response_type": "code",
+            "code_challenge_method": "S256",
+            "client_id": _CLIENT_ID,
+            "client-request-id": request_id,
+            "scope": _SCOPE,
+            "prompt": "select_account",
+            "redirect_uri": _REDIRECT_URI,
+            "code_challenge": _code_challenge(verifier),
+        }
+        async with session.get(
+            f"{_B2C_BASE}/{_POLICY}/oAuth2/v2.0/authorize", params=authorize
+        ) as response:
+            page = await response.text()
+        settings = parse_settings(page)
+        if settings is None:
+            # A maintenance page, a rate limit or a changed flow: not a
+            # credentials problem.
+            raise WatercareConnectionError(
+                "The Watercare sign-in page had no sign-in settings"
+            )
+        transaction = str(settings.get("transId", ""))
+        csrf = str(settings.get("csrf", ""))
 
-    async def get_refresh_token(self):
-        """Get the refresh token."""
-        _LOGGER.debug("API get_refresh_token")
-        jar = aiohttp.CookieJar(quote_cookie=False)
-        async with aiohttp.ClientSession(cookie_jar=jar) as session:
-            url = f"{self._url_token_base}/{self._p}/oAuth2/v2.0/authorize"
-
-            code_verifier = self.generate_code_verifier()
-            code_challenge = self.generate_code_challenge(code_verifier)
-            client_request_id = str(uuid.uuid4())
-            scope = f"{self._client_id} openid offline_access profile"
-
-            params = {
-                "response_type": "code",
-                "code_challenge_method": "S256",
-                "client_id": self._client_id,
-                "client-request-id": client_request_id,
-                "scope": scope,
-                "prompt": "select_account",
-                "redirect_uri": self._redirect_uri,
-                "code_challenge": code_challenge,
-            }
-
-            async with session.get(url, params=params) as response:
-                response_text = await response.text()
-
-            settings_json = self.get_setting_json(response_text)
-            _LOGGER.debug(f"settings_json: {settings_json}")
-
-            if settings_json is None:
-                # Watercare served something other than the B2C login page
-                # (maintenance page, rate limit, flow change).
-                raise WatercareAuthError(
-                    "Could not find sign-in settings on the Watercare login page"
-                )
-
-            trans_id = settings_json.get("transId")
-            csrf = settings_json.get("csrf")
-
-            url = f"{self._url_token_base}/{self._p}/SelfAsserted?tx={trans_id}&p={self._p}"
-            payload = {
+        # The query string is built by hand, exactly as the proven 1.4.x flow
+        # did, so the transaction id keeps its raw "=" characters.
+        async with session.post(
+            f"{_B2C_BASE}/{_POLICY}/SelfAsserted?tx={transaction}&p={_POLICY}",
+            headers={"X-CSRF-TOKEN": csrf},
+            data={
                 "request_type": "RESPONSE",
                 "email": self._email,
                 "password": self._password,
-            }
-            headers = {"X-CSRF-TOKEN": csrf}
+            },
+        ) as response:
+            body = await response.text()
+        # B2C reports bad credentials as JSON with a non-200 "status" while
+        # the HTTP status stays 200.
+        try:
+            check = json.loads(body)
+        except json.JSONDecodeError:
+            check = {}
+        if isinstance(check, dict) and str(check.get("status", "200")) != "200":
+            raise WatercareAuthError("Watercare rejected the email or password")
 
-            async with session.post(url, headers=headers, data=payload) as response:
-                credential_check_text = await response.text()
-
-            # B2C reports credential problems here as JSON with a non-200
-            # "status" field while the HTTP status stays 200.
-            try:
-                credential_check = json.loads(credential_check_text)
-            except json.JSONDecodeError:
-                credential_check = {}
-            if str(credential_check.get("status", "200")) != "200":
-                message = credential_check.get("message") or "Sign-in was rejected"
-                _LOGGER.debug("Watercare sign-in rejected: %s", message)
-                raise WatercareAuthError(message)
-
-            url = f"{self._url_token_base}/{self._p}/api/CombinedSigninAndSignup/confirmed"
-            params = {
+        async with session.get(
+            f"{_B2C_BASE}/{_POLICY}/api/CombinedSigninAndSignup/confirmed",
+            params={
                 "rememberMe": "false",
                 "csrf_token": csrf,
-                "tx": trans_id,
-                "p": self._p,
-            }
+                "tx": transaction,
+                "p": _POLICY,
+            },
+            allow_redirects=False,
+        ) as response:
+            status = response.status
+            location = response.headers.get("Location", "")
+        if status not in _REDIRECT_STATUSES:
+            raise WatercareConnectionError(
+                f"Watercare sign-in confirmation failed with HTTP {status}"
+            )
+        if "?" not in location:
+            raise WatercareConnectionError("Watercare sign-in returned no redirect")
+        query = parse_qs(location.split("?", 1)[1])
+        if "error" in query:
+            raise WatercareAuthError("Watercare refused the sign-in")
+        codes = query.get("code")
+        if not codes:
+            raise WatercareAuthError("Watercare returned no authorisation code")
 
-            headers = {}
-            async with session.get(
-                url, headers=headers, params=params, allow_redirects=False
-            ) as response:
-                if response.status not in [200, 301, 302, 307, 308]:
-                    response_text = await response.text()
-                    _LOGGER.error(
-                        "Failed to confirm sign in. Status: %s, Response: %s",
-                        response.status,
-                        response_text,
-                    )
-                    raise ValueError(
-                        f"Sign-in confirmation failed with status {response.status}"
-                    )
-
-                location = response.headers.get("Location", "")
-                if not location:
-                    _LOGGER.error("No Location header in response")
-                    raise ValueError("No redirect location in sign-in response")
-
-                query_params = parse_qs(location.split("?", 1)[1])
-                if "error" in query_params:
-                    description = (
-                        query_params.get("error_description") or ["unknown error"]
-                    )[0]
-                    _LOGGER.error(
-                        "Error in response: %s (%s)",
-                        query_params["error"][0],
-                        description,
-                    )
-                    raise WatercareAuthError(f"Authentication error: {description}")
-
-            if "code" not in query_params:
-                raise WatercareAuthError("No authorization code in sign-in response")
-            code = query_params["code"][0]
-
-            url = f"{self._url_token_base}/{self._p}/oauth2/v2.0/token"
-            params = {
-                "client_id": self._client_id,
-                "client-request-id": client_request_id,
-                "client_info": 1,
-                "code": code,
-                "code_verifier": code_verifier,
+        async with session.get(
+            f"{_B2C_BASE}/{_POLICY}/oauth2/v2.0/token",
+            params={
+                "client_id": _CLIENT_ID,
+                "client-request-id": request_id,
+                "client_info": "1",
+                "code": codes[0],
+                "code_verifier": verifier,
                 "grant_type": "authorization_code",
-                "scope": scope,
-            }
-
-            headers = {}
-            async with session.get(url, headers=headers, params=params) as response:
-                response_data = await response.json()
-                self._refresh_token = response_data.get("refresh_token")
-                self._token = response_data.get("access_token")
-                self._refresh_token_expires_in = response_data.get(
-                    "refresh_token_expires_in"
+                "scope": _SCOPE,
+            },
+        ) as response:
+            if response.status != _HTTP_OK:
+                raise WatercareConnectionError(
+                    f"Watercare token exchange failed with HTTP {response.status}"
                 )
-                self._access_token_expires_in = response_data.get("expires_in")
-                expires_in = int(self._access_token_expires_in or 0)
-                self._access_token_expires_at = time.monotonic() + max(
-                    expires_in - 60, 0
-                )
+            payload = await response.json(content_type=None)
+        if not isinstance(payload, dict):
+            raise WatercareAuthError("Watercare token response was not an object")
+        self._store_tokens(payload)
+        _LOGGER.debug("Signed in to Watercare")
 
-            _LOGGER.debug("Refresh token retrieved successfully.")
-            await self.get_accounts()
+    async def async_refresh_access_token(self) -> bool:
+        """Refresh the access token with the refresh token.
 
-    async def get_api_token(self):
-        """Refresh the Watercare access token."""
+        Returns False when there is no refresh token or Watercare refuses it,
+        so the caller can fall back to a full sign-in.
+        """
         if not self._refresh_token:
             return False
-
-        token_data = {
-            "grant_type": "refresh_token",
-            "client_id": self._client_id,
-            "refresh_token": self._refresh_token,
-        }
-
-        session, owned = self._api_session()
         try:
-            url = f"{self._url_token_base}/{self._p}/oauth2/v2.0/token"
-            async with session.post(url, data=token_data) as response:
-                if response.status == 200:
-                    token_result = await response.json()
-                    self._token = token_result.get("access_token")
-                    self._refresh_token = (
-                        token_result.get("refresh_token") or self._refresh_token
-                    )
-                    self._access_token_expires_in = token_result.get("expires_in", 0)
-                    expires_in = int(self._access_token_expires_in or 0)
-                    self._access_token_expires_at = time.monotonic() + max(
-                        expires_in - 60, 0
-                    )
-                    _LOGGER.debug("Watercare access token refreshed successfully")
-                    return bool(self._token)
-                else:
-                    _LOGGER.warning(
-                        "Failed to refresh Watercare access token: %s",
+            async with self._session.post(
+                f"{_B2C_BASE}/{_POLICY}/oauth2/v2.0/token",
+                data={
+                    "grant_type": "refresh_token",
+                    "client_id": _CLIENT_ID,
+                    "refresh_token": self._refresh_token,
+                },
+                timeout=_TIMEOUT,
+            ) as response:
+                if response.status != _HTTP_OK:
+                    _LOGGER.debug(
+                        "Watercare refused the refresh token (HTTP %s)",
                         response.status,
                     )
                     return False
-        finally:
-            if owned:
-                await session.close()
-
-    async def get_accounts(self):
-        """Get the first account that we see."""
-        headers = {"authorization": "Bearer " + (self._token or "")}
-        session, owned = self._api_session()
+                payload = await response.json(content_type=None)
+        except (aiohttp.ClientError, TimeoutError) as err:
+            raise WatercareConnectionError(
+                f"Could not refresh the Watercare token: {type(err).__name__}"
+            ) from err
+        if not isinstance(payload, dict):
+            return False
         try:
-            async with session.get(
-                self._url_base + "v1/account", headers=headers
-            ) as result:
-                if result.status == 200:
-                    data = await result.json()
-                    _LOGGER.debug(f"Accounts: {data}")
-                    if data and isinstance(data, list) and len(data) > 0:
-                        # Keep the whole record: it carries the meter type, meter
-                        # serial, balance, amount due and due date, none of which
-                        # appear on the usage endpoints.
-                        self._account = data[0]
-                        self._accountNumber = data[0].get("accountNumber")
-                        if self._accountNumber:
-                            _LOGGER.debug(f"AccountNumber: {self._accountNumber}")
-                        else:
-                            _LOGGER.error("Account number not found in the response")
-                    else:
-                        _LOGGER.error("No accounts found in the response")
-                else:
-                    _LOGGER.error(
-                        "Failed to fetch customer accounts %s", await result.text()
-                    )
-        finally:
-            if owned:
-                await session.close()
+            self._store_tokens(payload)
+        except WatercareAuthError:
+            return False
+        _LOGGER.debug("Refreshed the Watercare access token")
+        return True
 
-    async def get_data(
-        self, endpoint: str, start_date: str = None, end_date: str = None
-    ):
-        """Get data from the API."""
-        if endpoint not in [
-            "halfhourly",
-            "dailywithstats",
-            "monthly",
-            "mechanicalmonthly",
-        ]:
-            raise ValueError("Invalid endpoint specified")
+    async def async_ensure_token(self) -> None:
+        """Make sure a usable access token is held."""
+        if self._access_token_valid():
+            return
+        if await self.async_refresh_access_token():
+            return
+        await self.async_sign_in()
 
-        # Authenticate fully on first use. On later polls, proactively refresh
-        # the short-lived access token while retaining the account number.
-        # Either path may call get_refresh_token(), which performs its own
-        # account fetch -- so `just_authenticated` tracks that, and the
-        # unconditional get_accounts() below is skipped in that case. This
-        # keeps every poll to exactly one v1/account request instead of two.
-        # WatercareAuthError from the sign-in dance propagates to the caller,
-        # which lets Home Assistant start a reauth flow.
-        just_authenticated = False
-        if not self._accountNumber:
-            _LOGGER.debug("No account number found, starting authentication process")
-            await self.get_refresh_token()
-            just_authenticated = True
-            if not self._accountNumber:
-                # Sign-in itself succeeded (no WatercareAuthError was raised),
-                # but no account came back -- a data/connection problem, not
-                # bad credentials, so this must not trigger reauth.
+    async def _async_get(self, path: str) -> Any:
+        """GET an API path as JSON, refreshing the token once on a 401."""
+        for attempt in range(2):
+            await self.async_ensure_token()
+            try:
+                async with self._session.get(
+                    f"{_API_BASE}{path}",
+                    headers={"authorization": f"Bearer {self._access_token}"},
+                    timeout=_TIMEOUT,
+                ) as response:
+                    if response.status == _HTTP_OK:
+                        return await response.json(content_type=None)
+                    status = response.status
+            except (aiohttp.ClientError, TimeoutError) as err:
                 raise WatercareConnectionError(
-                    "Authenticated but no account number returned"
+                    f"Watercare API request failed: {type(err).__name__}"
+                ) from err
+            except ValueError as err:
+                raise WatercareConnectionError(
+                    "Watercare API returned malformed JSON"
+                ) from err
+            if status == _HTTP_UNAUTHORIZED and attempt == 0:
+                _LOGGER.debug("Watercare rejected the access token; renewing it")
+                self._access_token = None
+                continue
+            if status == _HTTP_UNAUTHORIZED:
+                raise WatercareAuthError(
+                    "Watercare rejected a freshly issued access token"
                 )
-        elif self._access_token_is_expired():
-            if not await self.get_api_token():
-                _LOGGER.debug(
-                    "Refresh token unavailable or expired; authenticating again"
-                )
-                await self.get_refresh_token()
-                just_authenticated = True
-                if not self._token:
-                    # Re-login itself failed to yield a token: an auth problem.
-                    raise WatercareAuthError("Watercare reauthentication failed")
-                if not self._accountNumber:
-                    # Logged in fine but the account fetch failed: a connection
-                    # problem, not credentials -- must not trigger reauth.
-                    raise WatercareConnectionError(
-                        "Authenticated but no account number returned"
-                    )
+            raise WatercareConnectionError(
+                f"Watercare API request failed with HTTP {status}"
+            )
+        raise WatercareConnectionError(
+            "Watercare API request failed"
+        )  # pragma: no cover
 
-        if not just_authenticated:
-            # Refresh the account record each poll so balance, amount due and
-            # due date stay current; it is a small request and only runs
-            # twice a day. (When we just authenticated above,
-            # get_refresh_token() already did this as part of signing in.)
-            await self.get_accounts()
+    async def async_get_account(self) -> AccountSummary:
+        """Fetch the account record (balance, due date, meter)."""
+        payload = await self._async_get("v1/account")
+        account = AccountSummary.from_json(payload)
+        if account is None:
+            raise WatercareConnectionError("Watercare returned no account")
+        self._account = account
+        return account
 
-        url = f"{self._url_base}v1/usage/{self._accountNumber}/{endpoint}"
-        if start_date and end_date:
-            url += f"?from={start_date}&to={end_date}"
-
-        _LOGGER.debug(f"Calling API URL: {url}")
-
-        # Retry once after a 401. This also covers early token invalidation by
-        # Watercare rather than only relying on the advertised expiry time.
-        session, owned = self._api_session()
-        try:
-            for attempt in range(2):
-                headers = {"authorization": "Bearer " + (self._token or "")}
-                async with session.get(url, headers=headers) as response:
-                    if response.status == 200:
-                        data = await response.text()
-                        _LOGGER.debug("API Response status: %s", response.status)
-                        _LOGGER.debug(
-                            "API Response data length: %s", len(data) if data else 0
-                        )
-                        return data
-
-                    if response.status == 401 and attempt == 0:
-                        _LOGGER.warning(
-                            "Watercare access token was rejected; refreshing and retrying"
-                        )
-                        if await self.get_api_token():
-                            continue
-
-                        await self.get_refresh_token()
-                        if self._token:
-                            continue
-
-                    if response.status == 401:
-                        raise WatercareAuthError(
-                            "Watercare rejected the access token after a refresh"
-                        )
-                    _LOGGER.error("Could not fetch consumption: %s", response.status)
-                    return None
-
-            return None
-        finally:
-            if owned:
-                await session.close()
+    async def async_get_billing_periods(self) -> Any:
+        """Fetch the completed billing periods (mechanical meters)."""
+        account = self._account or await self.async_get_account()
+        number = quote(account.account_number, safe="")
+        return await self._async_get(f"v1/usage/{number}/mechanicalmonthly")
