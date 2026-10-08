@@ -22,7 +22,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from itertools import pairwise
@@ -61,6 +61,8 @@ _LITRES_PER_KILOLITRE: Final = Decimal(1000)
 _ONE_DAY: Final = timedelta(days=1)
 _PRECISION: Final = Decimal("0.000000001")
 _CLEAR_TIMEOUT: Final = 300.0
+# Litres. Stored sums are floats; anything above this is a real difference.
+_VOLUME_TOLERANCE: Final = Decimal("0.5")
 
 CostKind = Literal["total", "water", "wastewater"]
 
@@ -184,18 +186,8 @@ def daily_cost(
     )
 
 
-@dataclass(frozen=True, slots=True)
-class BillCost:
-    """Cost of one bill, summed from its days."""
-
-    water: Decimal
-    wastewater: Decimal
-    fixed: Decimal
-
-    @property
-    def total(self) -> Decimal:
-        """Return the bill total."""
-        return self.water + self.wastewater + self.fixed
+BillCost = DailyCost
+"""Cost of one bill: the sum of its days."""
 
 
 def bill_cost(
@@ -204,27 +196,29 @@ def bill_cost(
     schedule: TariffSchedule,
     wastewater_ratio: Decimal,
 ) -> BillCost | None:
-    """Return the cost of one bill, or None if any of its days has no tariff."""
-    for candidate, days in spread_period_days(periods):
-        if candidate != period:
+    """Return the cost of one bill, or None if any of its days has no tariff.
+
+    Uses the same daily rows as the statistics, so the sensor and the Energy
+    dashboard always agree.
+    """
+    spread = dict(spread_period_days(periods))
+    if period not in spread:
+        return None
+    days = set(spread[period])
+    total = DailyCost(Decimal(0), Decimal(0), Decimal(0))
+    for usage in daily_usage(periods):
+        if usage.day not in days:
             continue
-        usage_shares = split_evenly(Decimal(period.usage_litres), len(days))
-        fixed_shares = split_evenly(Decimal(period.number_of_days), len(days))
-        water = wastewater = fixed = Decimal(0)
-        for day, usage_share, fixed_share in zip(
-            days, usage_shares, fixed_shares, strict=True
-        ):
-            tariff = schedule.for_day(day)
-            if tariff is None:
-                return None
-            cost = daily_cost(
-                DailyUsage(day, usage_share, fixed_share), tariff, wastewater_ratio
-            )
-            water += cost.water
-            wastewater += cost.wastewater
-            fixed += cost.fixed
-        return BillCost(water, wastewater, fixed)
-    return None
+        tariff = schedule.for_day(usage.day)
+        if tariff is None:
+            return None
+        cost = daily_cost(usage, tariff, wastewater_ratio)
+        total = DailyCost(
+            total.water + cost.water,
+            total.wastewater + cost.wastewater,
+            total.fixed + cost.fixed,
+        )
+    return total
 
 
 def day_start(day: date) -> datetime:
@@ -276,22 +270,32 @@ def _cost_metadata(statistic_id: str, name: str) -> StatisticMetaData:
     }
 
 
-async def _async_last_stored(hass: HomeAssistant, statistic_id: str) -> _Stored | None:
-    """Return the newest stored row of a statistic, if it has a sum."""
-    result = await get_instance(hass).async_add_executor_job(
-        get_last_statistics, hass, 1, statistic_id, False, {"sum"}
+def _last_stored_rows(
+    hass: HomeAssistant, statistic_ids: Sequence[str]
+) -> dict[str, _Stored | None]:
+    """Return the newest stored row of each statistic (recorder executor)."""
+    stored: dict[str, _Stored | None] = {}
+    for statistic_id in statistic_ids:
+        rows = get_last_statistics(hass, 1, statistic_id, False, {"sum"}).get(
+            statistic_id
+        )
+        if not rows or rows[0].get("sum") is None:
+            stored[statistic_id] = None
+            continue
+        start = rows[0]["start"]
+        start_dt = (
+            start
+            if isinstance(start, datetime)
+            else datetime.fromtimestamp(float(start), tz=UTC)
+        )
+        stored[statistic_id] = _Stored(start_dt, Decimal(str(rows[0]["sum"])))
+    return stored
+
+
+async def _async_last_stored(hass: HomeAssistant) -> dict[str, _Stored | None]:
+    return await get_instance(hass).async_add_executor_job(
+        _last_stored_rows, hass, ALL_STATISTIC_IDS
     )
-    rows = result.get(statistic_id) or []
-    if not rows or rows[0].get("sum") is None:
-        return None
-    row = rows[0]
-    start = row["start"]
-    start_dt = (
-        start
-        if isinstance(start, datetime)
-        else datetime.fromtimestamp(float(start), tz=UTC)
-    )
-    return _Stored(start_dt, Decimal(str(row["sum"])))
 
 
 async def async_import(
@@ -301,10 +305,7 @@ async def async_import(
     wastewater_ratio: Decimal,
 ) -> ImportResult:
     """Add rows for days after the stored history (normal poll)."""
-    stored = {
-        statistic_id: await _async_last_stored(hass, statistic_id)
-        for statistic_id in ALL_STATISTIC_IDS
-    }
+    stored = await _async_last_stored(hass)
     consumption = stored[STAT_CONSUMPTION]
     after = (
         consumption.start.astimezone(NZ_TIMEZONE).date()
@@ -410,19 +411,41 @@ def _cost_rows(
     return rows, None
 
 
-async def async_history_before(hass: HomeAssistant, before: date) -> bool:
-    """Return whether stored consumption history starts before a day."""
-    result = await get_instance(hass).async_add_executor_job(
+async def async_rebuild_would_lose_history(
+    hass: HomeAssistant, periods: Sequence[BillingPeriod]
+) -> bool:
+    """Return whether replacing the stored history would lose any of it.
+
+    True when stored consumption starts before the oldest bill Watercare now
+    returns, or when the stored running total is larger than a rebuild would
+    reach by the same day (a bill Watercare no longer returns). Both checks
+    hold for the 1.4.x layout (one row per bill end) and for daily rows.
+    """
+    first_day = min(period.start for period in periods)
+    earlier = await get_instance(hass).async_add_executor_job(
         statistics_during_period,
         hass,
         datetime(1970, 1, 1, tzinfo=UTC),
-        day_start(before),
+        day_start(first_day),
         {STAT_CONSUMPTION},
         "hour",
         None,
         {"sum"},
     )
-    return bool(result.get(STAT_CONSUMPTION))
+    if earlier.get(STAT_CONSUMPTION):
+        return True
+    stored = (await _async_last_stored(hass))[STAT_CONSUMPTION]
+    if stored is None:
+        return False
+    rebuilt = sum(
+        (
+            usage.litres
+            for usage in daily_usage(periods)
+            if day_start(usage.day) <= stored.start
+        ),
+        Decimal(0),
+    )
+    return stored.total > rebuilt + _VOLUME_TOLERANCE
 
 
 async def async_clear(hass: HomeAssistant) -> None:
@@ -475,9 +498,4 @@ async def async_rebuild(
         result.consumption_rows,
         result.cost_rows,
     )
-    return ImportResult(
-        consumption_rows=result.consumption_rows,
-        cost_rows=result.cost_rows,
-        first_day_without_tariff=result.first_day_without_tariff,
-        rebuilt=True,
-    )
+    return replace(result, rebuilt=True)

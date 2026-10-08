@@ -126,3 +126,10 @@ def test_matching_published_year() -> None:
     assert matching_published_year(2.296, 3.994, 332.0) == 2025
     assert matching_published_year(2.3, 3.994, 332) is None
     assert Decimal("355.90") == PUBLISHED_TARIFFS[2026].fixed_charge
+
+
+def test_tariff_from_user_input_rejects_invalid_figures() -> None:
+    with pytest.raises(ValueError, match="Invalid tariff"):
+        tariff_from_user_input(
+            {"water_rate": -1, "wastewater_rate": 4.28, "fixed_charge": 355.9}
+        )

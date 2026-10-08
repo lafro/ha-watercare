@@ -29,9 +29,9 @@ from custom_components.watercare.const import (
 from custom_components.watercare.models import BillingPeriod
 from custom_components.watercare.statistics import (
     async_clear,
-    async_history_before,
     async_import,
     async_rebuild,
+    async_rebuild_would_lose_history,
     bill_cost,
     day_start,
 )
@@ -261,9 +261,35 @@ async def test_clear_removes_all_four_statistics(ha: HomeAssistant) -> None:
         assert await _rows(ha, statistic_id) == []
 
 
-async def test_history_before(ha: HomeAssistant) -> None:
-    assert not await async_history_before(ha, date(2026, 6, 16))
-    await _add_legacy_rows(ha)
+async def test_rebuild_guard(ha: HomeAssistant) -> None:
+    # Nothing stored: nothing to lose.
+    assert not await async_rebuild_would_lose_history(ha, [JUNE, JULY])
 
-    assert not await async_history_before(ha, date(2026, 6, 16))
-    assert await async_history_before(ha, date(2026, 8, 1))
+    # 1.4.x rows at bill ends with matching totals: safe to rebuild.
+    await _add_legacy_rows(ha)
+    assert not await async_rebuild_would_lose_history(ha, [JUNE, JULY, AUGUST])
+
+    # Watercare no longer returns the June bill: stored rows reach back
+    # before the oldest bill.
+    assert await async_rebuild_would_lose_history(ha, [JULY, AUGUST])
+
+
+async def test_rebuild_guard_catches_a_dropped_bill_on_a_shared_boundary(
+    ha: HomeAssistant,
+) -> None:
+    await _add_legacy_rows(ha)
+    # Bills share boundary days and the API dropped the June bill: the next
+    # bill starts on 16 July, the day of the stored June row, so only the
+    # running total shows the loss.
+    july = _period(date(2026, 7, 16), date(2026, 8, 16), 9000)
+
+    assert await async_rebuild_would_lose_history(ha, [july, AUGUST])
+
+
+async def test_daily_rows_from_an_earlier_install_are_safe_to_rebuild(
+    ha: HomeAssistant,
+) -> None:
+    await async_import(ha, [JUNE, JULY], PUBLISHED, RATIO)
+    await async_wait_recording_done(ha)
+
+    assert not await async_rebuild_would_lose_history(ha, [JUNE, JULY, AUGUST])

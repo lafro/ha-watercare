@@ -36,9 +36,9 @@ from .models import (
 from .statistics import (
     BillCost,
     ImportResult,
-    async_history_before,
     async_import,
     async_rebuild,
+    async_rebuild_would_lose_history,
     bill_cost,
 )
 from .tariffs import (
@@ -134,9 +134,8 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
 
         periods = parsed.periods
         latest = periods[-1]
-        missing_year = self._async_check_tariff()
-
         result = await self._async_update_statistics(periods)
+        missing_year = self._async_check_tariff(result.first_day_without_tariff)
 
         return WatercareData(
             account=account,
@@ -162,15 +161,12 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
                 self.hass, periods, self.schedule, self.wastewater_ratio
             )
 
-        if await async_history_before(
-            self.hass, min(period.start for period in periods)
-        ):
-            # The stored history reaches back further than Watercare now
-            # returns, so a rebuild would lose it. Keep the stored rows and
-            # carry on from them.
+        if await async_rebuild_would_lose_history(self.hass, periods):
+            # The stored history holds bills Watercare no longer returns, so a
+            # rebuild would lose them. Keep the stored rows and carry on.
             _LOGGER.warning(
-                "Not rebuilding the Watercare statistics: stored history starts "
-                "before the oldest bill Watercare returns. New days are added "
+                "Not rebuilding the Watercare statistics: the stored history "
+                "includes bills Watercare no longer returns. New days are added "
                 "after the stored history instead"
             )
             ir.async_create_issue(
@@ -198,12 +194,21 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
         )
         return result
 
-    def _async_check_tariff(self) -> int | None:
-        """Raise or clear the repair issue for a financial year without prices."""
+    def _async_check_tariff(self, first_unpriced_day: date | None) -> int | None:
+        """Raise or clear the repair issue for a financial year without prices.
+
+        The year asked for is the earliest one that blocks the cost
+        statistics, or else the current year if it has no prices yet.
+        """
         today: date = dt_util.now(NZ_TIMEZONE).date()
-        year = financial_year(today)
+        if first_unpriced_day is not None:
+            year: int | None = financial_year(first_unpriced_day)
+        elif not self.schedule.has_year(financial_year(today)):
+            year = financial_year(today)
+        else:
+            year = None
         issue_id = f"{ISSUE_TARIFF_MISSING}_{self.config_entry.entry_id}"
-        if self.schedule.has_year(year):
+        if year is None:
             ir.async_delete_issue(self.hass, DOMAIN, issue_id)
             return None
         ir.async_create_issue(

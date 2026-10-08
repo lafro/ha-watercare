@@ -19,7 +19,12 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Any, Final
 
-from .const import CONF_FIXED_CHARGE, CONF_WASTEWATER_RATE, CONF_WATER_RATE
+from .const import (
+    CONF_FIXED_CHARGE,
+    CONF_TARIFF_OVERRIDES,
+    CONF_WASTEWATER_RATE,
+    CONF_WATER_RATE,
+)
 
 DAYS_PER_YEAR: Final = Decimal(365)
 
@@ -120,7 +125,7 @@ def schedule_from_options(options: Mapping[str, Any]) -> TariffSchedule:
 
     Malformed entries are ignored rather than failing setup.
     """
-    raw = options.get("tariff_overrides")
+    raw = options.get(CONF_TARIFF_OVERRIDES)
     overrides: dict[int, Tariff] = {}
     if isinstance(raw, Mapping):
         for key, value in raw.items():
@@ -155,11 +160,10 @@ def _tariff_from_mapping(value: Any) -> Tariff | None:
 
 def tariff_from_user_input(value: Mapping[str, Any]) -> Tariff:
     """Build a tariff from validated form input."""
-    return Tariff(
-        Decimal(str(value[CONF_WATER_RATE])),
-        Decimal(str(value[CONF_WASTEWATER_RATE])),
-        Decimal(str(value[CONF_FIXED_CHARGE])),
-    )
+    tariff = _tariff_from_mapping(value)
+    if tariff is None:
+        raise ValueError("Invalid tariff input")
+    return tariff
 
 
 def matching_published_year(

@@ -107,13 +107,27 @@ async def test_user_flow_errors_then_recovers(
     assert "refresh_token" not in result["data"]
 
 
-async def test_user_flow_rejects_a_duplicate_account(
+async def test_only_one_entry_is_allowed(
     ha: HomeAssistant, mock_login: AsyncMock, mock_setup: AsyncMock
 ) -> None:
+    # The statistic ids are shared, so a second account would overwrite them.
     make_entry().add_to_hass(ha)
     result = await ha.config_entries.flow.async_init(
         DOMAIN, context={"source": SOURCE_USER}
     )
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "single_instance_allowed"
+    mock_login.assert_not_called()
+
+
+async def test_user_flow_rejects_an_account_already_configured(
+    ha: HomeAssistant, mock_login: AsyncMock, mock_setup: AsyncMock
+) -> None:
+    result = await ha.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_USER}
+    )
+    # The account gets configured while the form is open.
+    make_entry().add_to_hass(ha)
     result = await ha.config_entries.flow.async_configure(
         result["flow_id"], {CONF_USERNAME: EMAIL, CONF_PASSWORD: PASSWORD}
     )

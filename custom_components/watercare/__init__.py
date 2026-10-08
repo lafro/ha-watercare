@@ -10,6 +10,7 @@ from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryError
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.util import dt as dt_util
 
@@ -23,6 +24,8 @@ from .const import (
     CONF_WATER_RATE,
     DEFAULT_WASTEWATER_RATIO,
     DOMAIN,
+    ISSUE_REBUILD_SKIPPED,
+    ISSUE_TARIFF_MISSING,
     LEGACY_ANNUAL_LINE_CHARGE,
     LEGACY_CONSUMPTION_RATE,
     LEGACY_EMAIL,
@@ -90,6 +93,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: WatercareConfigEntry) ->
 async def async_unload_entry(hass: HomeAssistant, entry: WatercareConfigEntry) -> bool:
     """Unload a config entry."""
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Remove the entry's repair issues. Statistics are kept on purpose."""
+    for issue in (ISSUE_TARIFF_MISSING, ISSUE_REBUILD_SKIPPED):
+        ir.async_delete_issue(hass, DOMAIN, f"{issue}_{entry.entry_id}")
 
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

@@ -5,7 +5,7 @@ Public HACS integration (`custom_components/watercare`, domain `watercare`). Rea
 ## Rules
 
 - **Synthetic data only.** Never put a real Watercare account or meter number, email, name, address, token, balance or usage figure in code, tests, docs, commits, PRs or issues. Use the values in `tests/common.py`.
-- **No Home Assistant access from this repository's sessions.** Do not call Home Assistant tools or deploy by hand (no SSH, Samba or copying into `custom_components`). Deploy = release, then a HACS download of that version, then a restart, done from the Home Assistant operations repository.
+- **No Home Assistant access from this repository's sessions.** Run them without any Home Assistant connector attached (`.claude/settings.json` only denies common local server names; a claude.ai connector has its own id). Do not call Home Assistant tools or deploy by hand (no SSH, Samba or copying into `custom_components`). Deploy = release, then a HACS download of that version, then a restart, done from the Home Assistant operations repository.
 - **Releases** come only from the Release workflow, dispatched by the maintainer. Never create, move or delete tags or releases. Never release a CI-only or docs-only change. See `docs/release.md`.
 - **Statistics continuity matters more than tidiness.** Statistic ids, entity unique ids and the config-entry migration path must keep existing installations working. Never rewrite stored statistics except through the documented one-off rebuild, and never run SQL against the recorder.
 - **Prices** change every 1 July. Add new years to `tariffs.py` with a cited source in `docs/tariffs.md`.

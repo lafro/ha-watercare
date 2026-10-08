@@ -10,7 +10,7 @@ First release from the standalone `lafro/ha-watercare` repository. The domain, e
 - **Each bill priced at the prices of its own year.** The integration carries Watercare's published residential prices for every financial year from 2018/19 to 2026/27, with sources in [docs/tariffs.md](docs/tariffs.md). Each day is priced with that day's prices, so a bill that spans 1 July is split between the two years. Before, every past bill was recalculated at the one flat price in the options on every poll.
 - **History is no longer rewritten.** Each poll only adds days after the stored history and continues its running total. A changed price, or a shorter response from Watercare, can no longer change or step down past values.
 - **One-off rebuild on upgrade.** On its first poll, 1.5.0 clears the four `watercare:*` statistics and imports the full history in the new format, once. Back up Home Assistant and export those statistics first: see [docs/migration.md](docs/migration.md). If stored history reaches further back than Watercare now returns, the rebuild is skipped and a repair notice explains why.
-- **Costs pause rather than guess.** If the prices for the current financial year are not known, cost statistics stop from 1 July and a repair notice asks for the prices from the bill. Water use keeps recording.
+- **Costs pause rather than guess.** If the prices for a financial year are not known, cost statistics stop from its 1 July and a repair notice asks for that year's prices from the bill. Water use keeps recording.
 
 Expect different cost totals from 1.4.x: the 1.4.x defaults were the 2025/26 prices, so older bills now cost less and bills from 1 July 2026 more.
 
@@ -20,6 +20,7 @@ Expect different cost totals from 1.4.x: the 1.4.x defaults were the 2025/26 pri
 - New **Reconfigure** step to change the email or password for the same account.
 - Re-authentication refuses credentials for a different account.
 - Setup errors now distinguish an unexpected error (`unknown`) from a connection problem.
+- Only one Watercare entry can be added: the statistic ids are shared, so a second account would overwrite the first account's history. (Earlier releases allowed it, and the two accounts' statistics collided.)
 - Home Assistant 2026.10.0 or newer is required.
 
 ### Reliability and privacy

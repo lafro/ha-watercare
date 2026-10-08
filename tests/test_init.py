@@ -338,3 +338,46 @@ async def test_migrate_entry_guards(ha: HomeAssistant) -> None:
     assert not await async_migrate_entry(ha, newer)
     assert await async_migrate_entry(ha, current)
     assert current.options == {"wastewater_ratio": 0.95}
+
+
+async def test_tariff_issue_names_the_earliest_unpriced_year(
+    ha: HomeAssistant,
+    mock_api: dict[str, AsyncMock],
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    # A year was skipped: 2028/29 prices are known, 2027/28 are not.
+    freezer.move_to("2028-08-02T12:00:00+12:00")
+    mock_api["periods"].return_value = [
+        api_period(date(2027, 6, 16), date(2027, 7, 16), 5000),
+        *default_periods(),
+    ]
+    entry = make_entry(
+        options={
+            "wastewater_ratio": 0.785,
+            "tariff_overrides": {
+                "2028": {"water_rate": 2.8, "wastewater_rate": 4.9, "fixed_charge": 400}
+            },
+        }
+    )
+    await _setup(ha, entry)
+
+    issue = ir.async_get(ha).async_get_issue(DOMAIN, f"tariff_missing_{entry.entry_id}")
+    assert issue is not None
+    assert issue.translation_placeholders == {"financial_year": "2027/28"}
+    assert entry.runtime_data.data.missing_tariff_year == 2027
+
+
+async def test_removing_the_entry_removes_its_issues(
+    ha: HomeAssistant,
+    mock_api: dict[str, AsyncMock],
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    freezer.move_to("2027-07-02T12:00:00+12:00")
+    entry = make_entry()
+    await _setup(ha, entry)
+    issues = ir.async_get(ha)
+    assert issues.async_get_issue(DOMAIN, f"tariff_missing_{entry.entry_id}")
+
+    await ha.config_entries.async_remove(entry.entry_id)
+
+    assert issues.async_get_issue(DOMAIN, f"tariff_missing_{entry.entry_id}") is None

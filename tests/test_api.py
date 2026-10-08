@@ -360,3 +360,21 @@ async def test_rotated_token_without_a_callback(
 
     assert await api.async_refresh_access_token()
     assert api.refresh_token == "rotated"
+
+
+async def test_malformed_token_responses(aioclient_mock: AiohttpClientMocker) -> None:
+    aioclient_mock.post(TOKEN, text="<html>busy</html>")
+    aioclient_mock.get(AUTHORIZE, text=LOGIN_PAGE)
+    aioclient_mock.post(SELF_ASSERTED, json={"status": "200"})
+    aioclient_mock.get(
+        CONFIRMED,
+        status=HTTPStatus.FOUND,
+        headers={"Location": "msauth://x?code=auth-code"},
+    )
+    aioclient_mock.get(TOKEN, text="<html>busy</html>")
+    api, _ = _api(aioclient_mock, refresh_token="stored")
+
+    # Refresh falls back; the sign-in's token exchange is a connection error.
+    assert not await api.async_refresh_access_token()
+    with pytest.raises(WatercareConnectionError):
+        await api.async_sign_in()

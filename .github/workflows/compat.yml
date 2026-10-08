@@ -41,9 +41,12 @@ jobs:
           # Keep the locked test harness and force the newest stable release,
           # the same way pyproject.toml overrides the harness's beta pin.
           echo "homeassistant==$version" > "$RUNNER_TEMP/overrides.txt"
-          uv pip install --overrides "$RUNNER_TEMP/overrides.txt" "homeassistant==$version"
+          uv pip install --no-config --overrides "$RUNNER_TEMP/overrides.txt" \
+            "homeassistant==$version"
       - name: Install the newest test harness
         if: matrix.channel == 'newest'
-        run: uv pip install --upgrade pytest-homeassistant-custom-component
+        # --no-config: ignore pyproject's override so the harness's own
+        # Home Assistant pin (often the next beta) is installed.
+        run: uv pip install --no-config --upgrade pytest-homeassistant-custom-component
       - run: uv pip list | grep -Ei '^(homeassistant|pytest-homeassistant-custom-component) '
       - run: uv run --no-sync pytest -p no:cacheprovider

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -85,10 +84,6 @@ def _round_rate(value: Any) -> float:
     return round(float(value), 4)
 
 
-def _timestamp(value: str | None) -> datetime | None:
-    return parse_timestamp(value)
-
-
 SENSORS: tuple[WatercareSensorDescription, ...] = (
     WatercareSensorDescription(
         key="usage",
@@ -122,7 +117,7 @@ SENSORS: tuple[WatercareSensorDescription, ...] = (
         translation_key="billing_period_end",
         device_class=SensorDeviceClass.TIMESTAMP,
         entity_category=EntityCategory.DIAGNOSTIC,
-        value_fn=lambda data: _timestamp(data.latest_period.raw_to),
+        value_fn=lambda data: parse_timestamp(data.latest_period.raw_to),
     ),
     WatercareSensorDescription(
         key="payment_due_date",
@@ -130,7 +125,7 @@ SENSORS: tuple[WatercareSensorDescription, ...] = (
         device_class=SensorDeviceClass.TIMESTAMP,
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda data: (
-            _timestamp(data.account.payment_due_date) if data.account else None
+            parse_timestamp(data.account.payment_due_date) if data.account else None
         ),
     ),
     WatercareSensorDescription(

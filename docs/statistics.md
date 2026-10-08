@@ -49,13 +49,13 @@ Consequences:
 
 ## Costs at the tariff in force
 
-Each day is priced with that day's financial-year tariff ([tariffs.md](tariffs.md)). If no tariff is known for a day (a new financial year the release does not yet carry and the user has not entered), the cost statistics stop at the day before, and resume from that day once a tariff exists. The consumption statistic is unaffected. A repair notice asks for the prices.
+Each day is priced with that day's financial-year tariff ([tariffs.md](tariffs.md)). If no tariff is known for a day (a new financial year the release does not yet carry and the user has not entered), the cost statistics stop at the day before, and resume from that day once a tariff exists. The consumption statistic is unaffected. A repair notice asks for the prices of the earliest year that blocks the costs, or of the current year if it has none yet.
 
 ## The one-off rebuild (upgrade from 1.4.x)
 
 Statistics written by 1.4.x have one row per bill and are priced at one flat tariff, so they cannot be continued. Each config entry records `statistics_version: 2` once its statistics are in the new format. On the first successful poll of an entry without that marker, the integration:
 
-1. checks that the stored consumption history does not start before the oldest bill Watercare now returns (otherwise a rebuild would lose history; see below);
+1. checks that a rebuild would not lose history: the stored consumption must not start before the oldest bill Watercare now returns, and its running total must not exceed what a rebuild reaches by the same day (which would mean a bill Watercare no longer returns; see below);
 2. clears the four statistics through the recorder's own queue (`Recorder.async_clear_statistics`) and waits for the recorder to confirm;
 3. imports the full history as daily rows from zero (`async_add_external_statistics`, the recorder API for external statistics; `async_import_statistics` is the equivalent for entity statistics);
 4. records the marker.
@@ -66,7 +66,7 @@ A new config entry also has no marker, so its first poll clears and re-imports t
 
 ### When the rebuild is skipped
 
-If the stored history starts earlier than the oldest bill Watercare returns, the rebuild would delete history that cannot be recreated. The integration then keeps the stored rows, adds new days after them in the new format, records the marker and raises a repair notice, **Watercare statistics were not rebuilt**.
+If the stored history holds bills Watercare no longer returns (it starts earlier than the oldest returned bill, or its running total is larger than the returned bills add up to by the same day), the rebuild would delete history that cannot be recreated. The integration then keeps the stored rows, adds new days after them in the new format, records the marker and raises a repair notice, **Watercare statistics were not rebuilt**.
 
 To rebuild by hand in that case, after exporting the statistics (see [migration.md](migration.md)):
 

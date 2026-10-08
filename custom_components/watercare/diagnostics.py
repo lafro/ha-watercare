@@ -16,11 +16,14 @@ from homeassistant.core import HomeAssistant
 from . import WatercareConfigEntry
 from .const import (
     CONF_REFRESH_TOKEN,
-    CONF_TARIFF_OVERRIDES,
     CONF_WASTEWATER_RATIO,
     LEGACY_EMAIL,
 )
-from .tariffs import LATEST_PUBLISHED_YEAR, financial_year_label
+from .tariffs import (
+    LATEST_PUBLISHED_YEAR,
+    financial_year_label,
+    schedule_from_options,
+)
 
 TO_REDACT = {
     CONF_USERNAME,
@@ -40,7 +43,7 @@ async def async_get_config_entry_diagnostics(
     coordinator = entry.runtime_data
     data = coordinator.data
     last_exception = coordinator.last_exception
-    overrides = entry.options.get(CONF_TARIFF_OVERRIDES) or {}
+    overrides = schedule_from_options(entry.options).overrides
     result: dict[str, Any] = {
         "config_entry": {
             "version": entry.version,
@@ -48,7 +51,7 @@ async def async_get_config_entry_diagnostics(
             "data": async_redact_data(dict(entry.data), TO_REDACT),
             "wastewater_ratio": entry.options.get(CONF_WASTEWATER_RATIO),
             "tariff_override_years": sorted(
-                financial_year_label(int(year)) for year in overrides
+                financial_year_label(year) for year in overrides
             ),
         },
         "tariffs": {

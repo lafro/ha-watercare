@@ -42,7 +42,7 @@ Manual installation: copy `custom_components/watercare` from the latest release 
 | Email | Your Watercare login email. |
 | Password | Your Watercare password. Home Assistant stores it, with a renewable sign-in token, in its config entry and sends it only to Watercare. |
 
-Each Watercare account can be added once.
+One Watercare account can be added per Home Assistant instance, because the Energy dashboard statistics are shared.
 
 ### Options
 
@@ -161,6 +161,7 @@ automation:
 
 ## Known limitations
 
+- One Watercare account per Home Assistant instance.
 - Mechanical meters only. Smart-meter data uses different endpoints whose formats have not been verified; support needs a real sample first.
 - Daily values are an even split of each bill, not measured daily use. A mechanical meter is read about monthly in whole kilolitres.
 - Costs are calculated from published residential prices; Watercare's API provides no dollar figures. Infrastructure growth charges, trade waste, late fees and credits are not included. Business accounts use different prices and are not supported.

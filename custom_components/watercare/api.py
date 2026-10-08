@@ -168,9 +168,10 @@ class WatercareApi:
         try:
             async with self._sign_in_session() as session:
                 await self._async_sign_in(session)
-        except (aiohttp.ClientError, TimeoutError) as err:
+        except (aiohttp.ClientError, TimeoutError, ValueError) as err:
+            # ValueError: a response that should have been JSON was not.
             raise WatercareConnectionError(
-                f"Could not reach Watercare sign-in: {type(err).__name__}"
+                f"Could not complete the Watercare sign-in: {type(err).__name__}"
             ) from err
 
     async def _async_sign_in(self, session: aiohttp.ClientSession) -> None:
@@ -292,7 +293,11 @@ class WatercareApi:
                         response.status,
                     )
                     return False
-                payload = await response.json(content_type=None)
+                try:
+                    payload = await response.json(content_type=None)
+                except ValueError:
+                    _LOGGER.debug("Watercare returned a malformed token response")
+                    return False
         except (aiohttp.ClientError, TimeoutError) as err:
             raise WatercareConnectionError(
                 f"Could not refresh the Watercare token: {type(err).__name__}"
