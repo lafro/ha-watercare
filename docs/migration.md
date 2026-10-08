@@ -39,7 +39,7 @@ The entities, their recorded history and the Energy dashboard configuration are 
 1. If the integration came from a different HACS repository, remove that custom repository in HACS first, then add `https://github.com/lafro/ha-watercare` and download the new version. Otherwise update as usual.
 2. Restart Home Assistant.
 3. The config entry migrates (1.1 to 1.2): flat 1.4.x prices that match a published year are dropped in favour of the published table; others are kept as the current year's prices. The log says which.
-4. The integration loads as soon as it has fetched the bills. Once Home Assistant has started, the log shows `Rebuilding the Watercare statistics in the 1.5.0 format …` and then `Watercare statistics rebuilt: …`. If the rebuild fails, the log says `Could not update the Watercare statistics`, the integration stays loaded and the next poll rebuilds again (the entry only records `statistics_version: 2` once the database has taken the clear and the import off its queue).
+4. The integration loads as soon as it has fetched the bills. Once Home Assistant has started, the log shows `Rebuilding the Watercare statistics in the 1.5.0 format …` and then `Watercare statistics rebuilt: …`. If the rebuild fails, the log says `Could not update the Watercare statistics`, the integration stays loaded and the next poll rebuilds again (the entry only records `statistics_version: 2` once the recorder has taken the clear and the import off its queue; [statistics.md](statistics.md#what-the-wait-before-a-read-guarantees) covers an import the recorder retries or drops after that).
 
 ## If a 1.5.0 upgrade got stuck
 

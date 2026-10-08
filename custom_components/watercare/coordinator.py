@@ -273,7 +273,10 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
             # only once the recorder has taken all of it. Until then the
             # marker is unset, so whatever a shutdown drops, the next start
             # rebuilds. Recorded earlier, it could say the statistics were
-            # rebuilt while they still hold the 1.4.x rows, or nothing.
+            # rebuilt while they still hold the 1.4.x rows, or nothing. Taken
+            # is not always written: an import the recorder retries or drops
+            # after this leaves its statistic empty for now, and the next
+            # update imports an empty statistic in full (docs/statistics.md).
             await async_wait_for_queue(self.hass)
             self.statistics_status = "rebuilt"
 

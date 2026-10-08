@@ -27,12 +27,17 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from homeassistant.components.recorder import Recorder, get_instance
+from homeassistant.components.recorder import statistics as recorder_statistics
 from homeassistant.components.recorder.statistics import get_last_statistics
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
 from homeassistant.core import CoreState, HomeAssistant
 
-from custom_components.watercare.const import ALL_STATISTIC_IDS, STAT_CONSUMPTION
+from custom_components.watercare.const import (
+    ALL_STATISTIC_IDS,
+    STAT_CONSUMPTION,
+    STAT_TOTAL_COST,
+)
 from custom_components.watercare.coordinator import WatercareCoordinator
 from custom_components.watercare.models import BillingPeriod
 from custom_components.watercare.statistics import ImportResult, async_rebuild
@@ -321,6 +326,70 @@ async def test_a_poll_that_finishes_after_unload_starts_no_statistics_update(
     assert len(await stored_rows(ha, STAT_CONSUMPTION)) == REBUILT_ROWS
 
 
+@pytest.mark.parametrize(
+    ("reload", "expected_updates", "rows"),
+    [(False, [], 0), (True, [3], REBUILT_ROWS)],
+    ids=["unloaded", "reloaded"],
+)
+async def test_an_entry_unloaded_during_start_up_starts_no_statistics_at_start(
+    ha: HomeAssistant,
+    mock_api: dict[str, AsyncMock],
+    reload: bool,
+    expected_updates: list[int],
+    rows: int,
+) -> None:
+    """Unloading cancels the wait for start-up, not only a running update.
+
+    An entry can unload or reload before Home Assistant has started (a
+    reauthentication reloads it, say) while one of its polls is still
+    fetching bills. If its wait for start-up outlived the unload, the old
+    coordinator would start its statistics when Home Assistant started, and
+    that poll would then update the statistics alongside the new entry.
+    """
+    entry = make_entry()
+    entry.add_to_hass(ha)
+    ha.set_state(CoreState.not_running)
+    await _set_up_promptly(ha, entry)
+    old = entry.runtime_data
+    fetching = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _first_poll_held(_api: Any) -> list[dict[str, Any]]:
+        mock_api["periods"].side_effect = None  # later polls return at once
+        fetching.set()
+        await release.wait()
+        return [
+            api_period(date(2026, 9, 3), date(2026, 10, 2), 9000),
+            *default_periods(),
+        ]
+
+    mock_api["periods"].side_effect = _first_poll_held
+    # A background task, so that waiting for start-up does not wait for it.
+    poll = ha.async_create_background_task(old.async_refresh(), "stale poll")
+    async with asyncio.timeout(PROMPTLY):
+        await fetching.wait()
+
+    with _statistics_updates() as updates:
+        if reload:
+            assert await ha.config_entries.async_reload(entry.entry_id)
+            assert entry.runtime_data is not old
+        else:
+            assert await ha.config_entries.async_unload(entry.entry_id)
+        ha.set_state(CoreState.running)
+        ha.bus.async_fire(EVENT_HOMEASSISTANT_STARTED)
+        await ha.async_block_till_done()
+        release.set()
+        await poll
+        await ha.async_block_till_done(wait_background_tasks=True)
+
+    # The stale poll finished, with the new bill, and the old coordinator
+    # updated nothing: only a reloaded entry's own update ran.
+    assert old.data.period_count == 4
+    assert updates == expected_updates
+    assert old.last_import == ImportResult()
+    assert await _row_counts(ha) == dict.fromkeys(ALL_STATISTIC_IDS, rows)
+
+
 async def test_the_rebuild_is_recorded_as_done_only_once_the_recorder_has_it(
     ha: HomeAssistant, mock_api: dict[str, AsyncMock]
 ) -> None:
@@ -437,3 +506,93 @@ async def test_a_rebuild_dropped_at_shutdown_runs_again_on_the_next_start(
     assert entry.data["statistics_version"] == 2
     assert entry.runtime_data.statistics_status == "rebuilt"
     assert await _row_counts(ha) == dict.fromkeys(ALL_STATISTIC_IDS, REBUILT_ROWS)
+
+
+@pytest.mark.parametrize("retried", [True, False], ids=["retried", "dropped"])
+async def test_an_import_the_recorder_retries_or_drops_is_completed_later(
+    ha: HomeAssistant, mock_api: dict[str, AsyncMock], retried: bool
+) -> None:
+    """The marker means the recorder has taken the rebuild, not written it all.
+
+    An import that meets a database error is not written with the others. On
+    an error the recorder retries (a MySQL or MariaDB lock timeout or
+    deadlock), ``ImportStatisticsTask`` queues itself again, behind the wait
+    before the marker, so its rows are written after the marker. On any other
+    error the recorder logs it and gives up, and the statistic stays empty
+    under the marker. Either way it ends up with the rows the rebuild planned:
+    a statistic with no stored rows is always imported in full.
+    """
+    await add_legacy_statistics(ha)
+    entry = make_entry(statistics_version=None)
+    entry.add_to_hass(ha)
+    queued = asyncio.Event()
+    holds: list[tuple[asyncio.Event, threading.Event]] = []
+    planned: list[Any] = []
+    import_statistics = recorder_statistics.import_statistics
+
+    def _rebuild_behind_a_busy_recorder(*args: Any) -> ImportResult:
+        # Queue the rebuild and the wait for it before the recorder runs any
+        # of it, so the retry is queued behind the wait, as it is in practice.
+        holds.append(hold_recorder(ha))
+        result = async_rebuild(*args)
+        queued.set()
+        return result
+
+    def _one_import_fails(
+        instance: Recorder, metadata: Any, statistics: Any, table: Any
+    ) -> bool:
+        # What the recorder's retry wrapper returns for a database error:
+        # False to queue the import again, True to give up.
+        if metadata["statistic_id"] == STAT_TOTAL_COST and not planned:
+            planned.extend(statistics)
+            if retried:
+                # Hold the recorder between the wait and the retry.
+                holds.append(hold_recorder(ha))
+            return not retried
+        return import_statistics(instance, metadata, statistics, table)
+
+    with (
+        patch(
+            "custom_components.watercare.coordinator.async_rebuild",
+            side_effect=_rebuild_behind_a_busy_recorder,
+        ),
+        patch.object(recorder_statistics, "import_statistics", _one_import_fails),
+    ):
+        try:
+            await _set_up_promptly(ha, entry)
+            async with asyncio.timeout(PROMPTLY):
+                await queued.wait()
+            holds[0][1].set()
+            await ha.async_block_till_done(wait_background_tasks=True)
+
+            # The recorder has taken the whole rebuild off its queue, so the
+            # marker is recorded, but one statistic has no rows yet.
+            assert entry.data["statistics_version"] == 2
+            assert entry.runtime_data.statistics_status == "rebuilt"
+            assert await stored_rows(ha, STAT_TOTAL_COST, wait=False) == []
+            assert len(holds) == (2 if retried else 1)
+        finally:
+            for _, release in holds:
+                release.set()
+        # The retry writes the rows after the marker. A dropped import leaves
+        # the statistic empty.
+        rows = await stored_rows(ha, STAT_TOTAL_COST)
+        assert len(rows) == (REBUILT_ROWS if retried else 0)
+
+        # The next update imports an empty statistic in full, and nothing else.
+        await entry.runtime_data.async_refresh()
+        await ha.async_block_till_done(wait_background_tasks=True)
+
+    last_import = entry.runtime_data.last_import
+    assert last_import.consumption_rows == 0
+    assert last_import.cost_rows == (0 if retried else REBUILT_ROWS)
+    assert await _row_counts(ha) == dict.fromkeys(ALL_STATISTIC_IDS, REBUILT_ROWS)
+    rows = await stored_rows(ha, STAT_TOTAL_COST)
+    assert [(row["start"], row["state"], row["sum"]) for row in rows] == [
+        (
+            row["start"].timestamp(),
+            pytest.approx(row["state"]),
+            pytest.approx(row["sum"]),
+        )
+        for row in planned
+    ]

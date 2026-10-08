@@ -187,9 +187,16 @@ async def add_legacy_statistics(hass: HomeAssistant) -> None:
     await async_wait_recording_done(hass)
 
 
-async def stored_rows(hass: HomeAssistant, statistic_id: str) -> list[dict[str, Any]]:
-    """Return the stored rows of one statistic, once the recorder has caught up."""
-    await async_wait_recording_done(hass)
+async def stored_rows(
+    hass: HomeAssistant, statistic_id: str, *, wait: bool = True
+) -> list[dict[str, Any]]:
+    """Return the stored rows of one statistic, once the recorder has caught up.
+
+    With ``wait=False``, return what is stored now, even while the recorder
+    is held.
+    """
+    if wait:
+        await async_wait_recording_done(hass)
     result = await get_instance(hass).async_add_executor_job(
         statistics_during_period,
         hass,
