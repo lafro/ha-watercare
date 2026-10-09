@@ -1,4 +1,8 @@
 version: 2
+# Labels are explicit, and the same as in lafro/ha-meridian-energy:
+# github-actions in kebab case instead of Dependabot's default github_actions.
+# Dependabot ignores a listed label that does not exist in the repository (it
+# only creates its default labels), so create a label before listing it here.
 updates:
   # uv updates pyproject.toml and uv.lock together, so CI (uv sync --locked)
   # tests exactly what a pull request proposes.
@@ -6,6 +10,7 @@ updates:
     directory: /
     schedule:
       interval: monthly
+    labels: [dependencies, python]
     groups:
       python:
         patterns: ["*"]
@@ -20,6 +25,7 @@ updates:
     directory: /
     schedule:
       interval: monthly
+    labels: [dependencies, github-actions]
     groups:
       actions:
         patterns: ["*"]
