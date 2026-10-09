@@ -104,7 +104,7 @@ If the stored history holds bills Watercare no longer returns (it starts earlier
 
 To rebuild by hand in that case, after exporting the statistics (see [migration.md](migration.md)):
 
-1. delete the four statistics under **Developer tools → Statistics**;
+1. delete the four statistics under **Settings → Tools → Statistics**;
 2. delete the Watercare integration entry and add it again.
 
 The new entry's first statistics update imports everything Watercare returns.

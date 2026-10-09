@@ -57,7 +57,7 @@ If the 1.5.0 rebuild finished (daily water bars, `statistics_version: 2`), there
 ## Checking the result
 
 - **Settings → Dashboards → Energy → Water** shows daily bars instead of one bar per bill.
-- **Developer tools → Statistics** shows no issues for the four statistics.
+- **Settings → Tools → Statistics** shows no issues for the four statistics.
 - The total of the four statistics over a bill's dates matches the bill: see [tariffs.md](tariffs.md#checking-against-a-bill). A bill that spans 1 July is charged at the prices of the year it starts in.
 - The **Watercare** device's diagnostics show `statistics_status: rebuilt` (or `current` after a restart) and `statistics_version: 2`.
 - If a repair notice says the statistics were **not** rebuilt, read [statistics.md](statistics.md#when-the-rebuild-is-skipped).

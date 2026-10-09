@@ -62,7 +62,7 @@ Only one Watercare account can be added, so to switch to a different one, remove
 - **Keeps the old account's history** if the stored consumption starts before the first day of the new account's oldest bill, or if its running total on its newest day is larger than the new account's bills add up to by that day. A new account opened when moving house is this case, because its bills start after the stored history does. The stored rows stay, and the new account's days are added after the newest stored day, continuing its running totals (a new bill that ends on or before that day is left out; one that spans it is spread over the days after it). A persistent repair notice, **Watercare statistics were not rebuilt**, stays under **Settings → System → Repairs** until Watercare is removed. The statistics then hold the old account's history followed by the new account's.
 - **Replaces the old account's history** otherwise, that is when the new account's bills reach back at least as far as the stored consumption and add up to at least as much by its newest day. The update clears the four statistics and imports the new account's bills from the start. The old account's history is deleted, and no repair notice is raised.
 
-Either way, later polls only add new days. To keep a copy of the old account's history, export the four statistics before removing Watercare (step 2 of [Before upgrading](docs/migration.md#before-upgrading)). To start with only the new account's history, delete the four statistics under **Developer tools → Statistics** after removing Watercare and before adding it again; the new entry then imports everything the new account's bills return. Details: [docs/statistics.md](docs/statistics.md#when-the-rebuild-is-skipped).
+Either way, later polls only add new days. To keep a copy of the old account's history, export the four statistics before removing Watercare (step 2 of [Before upgrading](docs/migration.md#before-upgrading)). To start with only the new account's history, delete the four statistics under **Settings → Tools → Statistics** after removing Watercare and before adding it again; the new entry then imports everything the new account's bills return. Details: [docs/statistics.md](docs/statistics.md#when-the-rebuild-is-skipped).
 
 ## Entities
 
@@ -192,7 +192,7 @@ automation:
 2. Delete **Watercare** under **Settings → Devices & services**.
 3. Remove it in HACS and restart Home Assistant.
 
-The statistics stay in the database after removal. Delete them under **Developer tools → Statistics** if you no longer want the history.
+The statistics stay in the database after removal. Delete them under **Settings → Tools → Statistics** if you no longer want the history.
 
 ## Security, support and licence
 
