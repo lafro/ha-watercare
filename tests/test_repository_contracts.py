@@ -197,7 +197,9 @@ def test_compat_failures_open_a_tracking_issue() -> None:
     assert report["permissions"] == {"issues": "write"}
     assert workflow["permissions"] == {"contents": "read"}
     script = report["steps"][0]["run"]
-    assert "gh label create compat --color e99695" in script
+    # --force makes an existing label a success, so no error is swallowed.
+    assert "gh label create compat --force --color e99695" in script
+    assert "|| true" not in script
     assert 'gh issue create --title "$title" --body "$body" --label compat' in script
 
 

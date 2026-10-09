@@ -12,7 +12,9 @@ Agents working on this repository never create, move or delete tags or releases 
 
 ## Cut-over to `lafro/ha-watercare` (once, before 1.5.0)
 
-This repository starts life as `lafro/ha-watercare-next`, while `lafro/ha-watercare` is still the old fork (1.4.1, issues and private vulnerability reporting off). Every public link (manifest documentation and issue tracker, the repair notices' "learn more" links, README, SECURITY.md, the issue template, HACS) names `lafro/ha-watercare`, so the names must swap before anything is released or installed. The maintainer does these steps; agents do not rename repositories.
+**Done.** The maintainer did steps 1 to 3 before 1.5.0. The Release workflow then published v1.5.0 on 8 October 2026 and v1.5.1 on 9 October 2026, Auckland time, from this repository. The old fork, `lafro/ha-watercare-legacy`, was deleted on 9 October 2026, and the old name `lafro/ha-watercare-next` redirects here. The step 3 check was run again on 9 October 2026 and still returned `false`, `true` and `"enabled": true`. The steps stay below as a record.
+
+This repository started life as `lafro/ha-watercare-next`, while `lafro/ha-watercare` was still the old fork (1.4.1, issues and private vulnerability reporting off). Every public link (manifest documentation and issue tracker, the repair notices' "learn more" links, README, SECURITY.md, the issue template, HACS) names `lafro/ha-watercare`, so the names had to swap before anything was released or installed. The maintainer did these steps; agents do not rename repositories.
 
 1. Rename `lafro/ha-watercare` (the fork) to `lafro/ha-watercare-legacy`.
 2. Rename `lafro/ha-watercare-next` to `lafro/ha-watercare`.
@@ -23,7 +25,9 @@ Step 4 is enforced: the Release workflow's `python` job fails unless the manifes
 
 ## Merging the first pull request
 
-`main` was created by the import commit, whose LICENSE GitHub reports as `NOASSERTION`. HACS validation reads the licence of the **default branch**, so the required `hacs` check fails on every pull request until a fixed LICENSE is on `main`, and the "Protect main" ruleset has no bypass actors. The maintainer, once:
+**Done** with the first pull request (#1). On 9 October 2026 `gh api repos/lafro/ha-watercare/license --jq .license.spdx_id` returned `MIT`, and the "Protect main" ruleset again had no bypass actors and required `hacs`. The steps stay below as a record.
+
+`main` was created by the import commit, whose LICENSE GitHub reported as `NOASSERTION`. HACS validation reads the licence of the **default branch**, so the required `hacs` check failed on every pull request until a fixed LICENSE was on `main`, and the "Protect main" ruleset has no bypass actors. The maintainer, once:
 
 1. Saves the ruleset (`gh api repos/lafro/<current name>/rulesets/24698290 > before.json`), then temporarily adds Repository admin as a pull-request bypass actor, or removes `hacs` from its required checks.
 2. Squash-merges the pull request.
@@ -32,8 +36,10 @@ Step 4 is enforced: the Release workflow's `python` job fails unless the manifes
 
 ## Before releasing 1.5.0
 
-- The cost of a bill that spans 1 July follows one checked bill (see [tariffs.md](tariffs.md#how-a-bill-is-priced)). Compare the charge lines of another such bill, for example one issued in July 2025, with the integration's figure for it before releasing. If Watercare split it differently, change `pricing_date` (or the model) first: the one-off rebuild stores whatever this release calculates, and correcting it later needs another rebuild.
-- Follow the pre-flight in [migration.md](migration.md#before-upgrading), including the rollback rehearsal on a restored copy.
+1.5.0 and 1.5.1 are released. One check on this list was not done, and is still open.
+
+- [ ] **Compare a second bill that spans 1 July.** The cost of such a bill follows one checked bill ([tariffs.md](tariffs.md#how-a-bill-is-priced)). This list asked for the charge lines of another one, for example one issued in July 2025, to be compared with the integration's figure before 1.5.0. That was not done before 1.5.0 or 1.5.1, and no second comparison is recorded (A5 in [known-unknowns.md](known-unknowns.md)). Do it with the next bill that spans 1 July, or with an earlier one if it is to hand, and record the result in tariffs.md and known-unknowns.md. If Watercare split it differently, change `pricing_date` (or the model) and release a new version. 1.5.0's one-off rebuild has already stored the current rule's figures, and polls only add new days, so stored history only changes after a rebuild by hand ([statistics.md](statistics.md#when-the-rebuild-is-skipped)).
+- **Pre-flight and rollback rehearsal.** These belong to each installation, not to the release: anyone upgrading from 1.4.x follows [migration.md](migration.md#before-upgrading), including the rollback rehearsal on a restored copy. This repository does not record installations, so it holds no record of them.
 
 ## Each July
 
