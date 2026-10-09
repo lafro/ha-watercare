@@ -32,7 +32,7 @@ The honest register, as of 1.5.1. If you are about to rely on something load-bea
 - **Costs pause rather than guess.** With no prices for a bill's year, the cost statistics stop at that bill and a repair notice asks for the prices; water use keeps recording. ✅ (code)
 - **History before 1 July 2018 uses the 2018/19 prices**, the earliest year in the table, so it probably comes out a little high: the prices in the table rise every year. ✅ (code)
 - **One Watercare account per Home Assistant instance.** ✅ (code)
-- **Removing the integration keeps the statistics.** Delete them under **Developer tools → Statistics** if the history is no longer wanted. ✅ (code)
+- **Removing the integration keeps the statistics.** Delete them under **Settings → Tools → Statistics** if the history is no longer wanted. ✅ (code)
 
 ## Things to re-check on a schedule
 

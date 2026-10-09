@@ -25,7 +25,7 @@
       },
       "reconfigure": {
         "title": "Update the Watercare sign-in",
-        "description": "Change the email or password for this Watercare account. The account itself cannot be changed here; add a new entry for a different account.",
+        "description": "Change the email or password for this Watercare account. The account itself cannot be changed here; to switch accounts, remove Watercare and add it again.",
         "data": {
           "username": "Email",
           "password": "Password"
@@ -45,7 +45,7 @@
       "already_configured": "This Watercare account is already configured.",
       "reauth_successful": "Re-authentication was successful.",
       "reconfigure_successful": "The Watercare sign-in was updated.",
-      "wrong_account": "These credentials belong to a different Watercare account. Add it as a new entry instead."
+      "wrong_account": "These credentials belong to a different Watercare account. Only one account can be added, so to switch accounts, remove Watercare and add it again."
     }
   },
   "options": {
