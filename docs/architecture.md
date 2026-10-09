@@ -50,12 +50,13 @@ Home Assistant, every 12 hours
 ✅ (code)
 
 - The account record is fetched once per poll, and the bills request uses the account number from it. ✅ (code)
-- Parsing is tolerant: unknown keys are ignored, both timestamp forms Watercare sends are accepted (milliseconds on usage dates, none on the account's due date), a period with a missing or non-finite value (`NaN`, `Infinity`) is skipped, and a repeated period (same start and end) is kept once. ✅ (code)
+- Parsing is tolerant: unknown keys are ignored, and both timestamp forms Watercare sends are accepted (milliseconds on usage dates, none on the account's due date). A billing period is skipped only when it is not an object, a date is missing or unparseable, the end is before the start, or `waterUsage` is not a number, negative or non-finite (`NaN`, `Infinity`). A `null` or missing `waterUsage` counts as 0 litres and the period is kept ([known-unknowns.md](known-unknowns.md#assumptions-the-code-acts-on), A8). A `numberOfDays` that is missing, not a finite number or below 1 falls back to counting the days, both ends included, and a `dailyAverage` that is not a finite number becomes empty. A repeated period (same start and end) is kept once. ✅ (code)
 - Entities are thin. Each sensor is a description with a `value_fn` over the poll's `WatercareData`; the usage sensor also has an `attributes_fn` that keeps the 1.4.x attribute names for dashboards built on them. Unique ids are `<entry id>_<key>`. ✅ (code)
 
 ## Sign-in and tokens
 
-- Sign-in is Azure AD B2C's self-asserted (email and password) flow with PKCE, the flow Watercare's app uses; the tenant has no password-grant policy. A login page without B2C's `SETTINGS` object means maintenance, a rate limit or a changed flow, not bad credentials. ✅ (code)
+- Sign-in is Azure AD B2C's self-asserted (email and password) flow with PKCE, the flow Watercare's app uses. A login page without B2C's `SETTINGS` object means maintenance, a rate limit or a changed flow, not bad credentials. ✅ (code)
+- There is no simpler sign-in to switch to: Watercare's B2C tenant has no password-grant policy. ✅ (API probe, August 2026)
 - Each sign-in runs in its own session from `async_create_clientsession`, with its own cookie jar (`quote_cookie=False`, because B2C's cookies hold characters aiohttp would otherwise quote). The session is detached afterwards, never closed, because its connector belongs to Home Assistant. Every other request uses Home Assistant's shared session. ✅ (code)
 - The refresh token is stored in the config entry whenever it changes, so a restart renews the access token instead of signing in with the password. The access token lives in memory and is renewed 60 seconds before it expires. If the API answers 401, the client renews the token once and retries. ✅ (code)
 - Logs never include credentials, tokens, account or meter numbers, URLs that contain them, or response bodies, and use `%`-style formatting. ✅ (code)
