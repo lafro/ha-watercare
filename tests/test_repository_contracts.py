@@ -196,6 +196,9 @@ def test_compat_failures_open_a_tracking_issue() -> None:
     assert report["if"] == "failure() && github.event_name == 'schedule'"
     assert report["permissions"] == {"issues": "write"}
     assert workflow["permissions"] == {"contents": "read"}
+    script = report["steps"][0]["run"]
+    assert "gh label create compat --color e99695" in script
+    assert 'gh issue create --title "$title" --body "$body" --label compat' in script
 
 
 def _fake_root(root: Path, version_: str = "9.8.7") -> Path:
@@ -302,3 +305,15 @@ def test_dependabot_never_bumps_home_assistant_on_its_own() -> None:
     assert set(updates) == {"uv", "github-actions"}
     ignored = [item["dependency-name"] for item in updates["uv"].get("ignore", [])]
     assert ignored == ["homeassistant"]
+
+
+def test_dependabot_labels_are_explicit() -> None:
+    """Without labels, Dependabot creates and applies github_actions."""
+    config = yaml.safe_load((ROOT / ".github/dependabot.yml").read_text())
+    labels = {
+        update["package-ecosystem"]: update["labels"] for update in config["updates"]
+    }
+    assert labels == {
+        "uv": ["dependencies", "python"],
+        "github-actions": ["dependencies", "github-actions"],
+    }
