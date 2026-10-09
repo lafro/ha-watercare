@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Re-authentication and reconfiguration no longer suggest adding a different Watercare account as a new entry, which Home Assistant refuses because only one Watercare entry is allowed. They now say to remove Watercare and add it again to switch accounts.
+
 ## 1.5.1
 
 Fixes a start-up problem in 1.5.0's one-off statistics rebuild.

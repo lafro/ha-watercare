@@ -53,7 +53,7 @@ Open **Settings → Devices & services → Watercare → Configure**.
 | Wastewater ratio | Share of metered water billed as wastewater. Most homes are 0.785 (78.5%), apartments 0.95. Your bill shows it as, for example, "@78.50%". |
 | Water rate, Wastewater rate, Wastewater fixed charge | Prices for bills that start in the **current** financial year, GST-inclusive. They are pre-filled from Watercare's published prices when the integration knows them, and left empty when it does not (enter all three from your bill, or none). Change them only if your bill shows different prices; earlier years always use the published prices. A change never reprices days already recorded. |
 
-Use **Reconfigure** on the integration to change the email or password for the same account.
+Use **Reconfigure** on the integration to change the email or password for the same account. To switch to a different Watercare account, remove Watercare and add it again. The statistics are shared, so the new entry's first update rebuilds them from the new account's bills, unless that would delete stored history those bills cannot recreate; then it keeps the stored history, adds the new days after it and raises a repair notice ([docs/statistics.md](docs/statistics.md#when-the-rebuild-is-skipped)).
 
 ## Entities
 
