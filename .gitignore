@@ -18,6 +18,3 @@ htmlcov/
 
 # Local Home Assistant config used for manual testing
 config/
-
-# Per-machine agent settings (connector ids, local permissions)
-.claude/settings.local.json

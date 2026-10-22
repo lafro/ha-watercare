@@ -34,7 +34,7 @@ Retrieved 8 October 2026. The SHA-256 prefix identifies the exact file that was 
 
 ## How a bill is priced
 
-Watercare charges a whole bill at the prices in force when its billing period **starts**. A bill that runs from June into July is charged entirely at the earlier financial year's prices, and the new prices apply from the first bill that starts on or after 1 July. This was checked against a real bill whose period spanned 1 July 2026: pricing the whole bill at 2025/26 prices reproduced its total to the cent, while splitting it by day between 2025/26 and 2026/27 prices overstated it by about 3.7%, several dollars on one bill. There is no record that any other bill spanning 1 July has been checked (A5 in [known-unknowns.md](known-unknowns.md)). If another such bill shows a different split, please open an issue. The rule is one function, `pricing_date` in [`statistics.py`](../custom_components/watercare/statistics.py).
+Watercare charges a whole bill at the prices in force when its billing period **starts**. A bill that runs from June into July is charged entirely at the earlier financial year's prices, and the new prices apply from the first bill that starts on or after 1 July. This was checked against a real bill whose period spanned 1 July 2026: pricing the whole bill at 2025/26 prices reproduced its total to the cent, while splitting it by day between 2025/26 and 2026/27 prices overstated it by about 3.7%. There is no record that any other bill spanning 1 July has been checked (A5 in [known-unknowns.md](known-unknowns.md)). If another such bill shows a different split, please open an issue. The rule is one function, `pricing_date` in [`statistics.py`](../custom_components/watercare/statistics.py).
 
 For each bill, at its start date's prices:
 
@@ -53,7 +53,7 @@ Assumptions to know about:
 
 A bill's total should equal water + wastewater + fixed charge as above, using the row for the financial year in which the bill **starts**. For example, a made-up bill of 12 kL over a 30-day period starting in August 2025 (2025/26) gives 12 × 2.296 + 12 × 0.785 × 3.994 + 332 ÷ 365 × 30 = NZD 92.46.
 
-Releases up to 1.4.1 defaulted to 2.296 / 3.994 / 332 and labelled them as the 2026/27 prices, because they matched a bill issued in July 2026. They are the **2025/26** prices: that bill's period began in June, so Watercare charged it at 2025/26 prices. 1.4.x priced every past bill with them. From 1.5.0 each bill uses the prices of the year it starts in, so bills that start before 1 July 2025 come out lower, and bills that start on or after 1 July 2026 higher, than 1.4.x showed.
+Releases up to 1.4.1 defaulted to 2.296 / 3.994 / 332 and labelled them as the 2026/27 prices, because they matched a bill issued after 1 July 2026. They are the **2025/26** prices: that bill's period began before 1 July, so Watercare charged it at 2025/26 prices. 1.4.x priced every past bill with them. From 1.5.0 each bill uses the prices of the year it starts in, so bills that start before 1 July 2025 come out lower, and bills that start on or after 1 July 2026 higher, than 1.4.x showed.
 
 ## Adding a new year
 

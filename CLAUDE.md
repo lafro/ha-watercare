@@ -1,29 +1,14 @@
-# Watercare for Home Assistant: agent notes
+# CLAUDE.md: ha-watercare
 
 Public HACS integration (`custom_components/watercare`, domain `watercare`). Read `README.md`, `docs/statistics.md` and `docs/tariffs.md` before changing behaviour. This repository is public: everything committed here, and every PR or issue text, is world-readable.
 
 ## Rules
 
-- **Synthetic data only.** Never put a real Watercare account or meter number, email, name, address, token, balance, usage or cost figure, or the dates of a real bill, in code, tests, docs, commits, PRs or issues, nor details of the maintainer's own installation. Use the values in `tests/common.py` (made-up bills on the 3rd and 4th of the month).
-- **Secret scan before every push**: `gitleaks git --log-opts="origin/main..HEAD"` and `gitleaks dir .` (or a grep for the same patterns if gitleaks is missing). Anything found blocks the push. The contract tests also reject account-number and meter-id shapes and non-example emails, but they cannot recognise a real usage figure.
-- **No Home Assistant access from this repository's sessions.** Never call Home Assistant tools, and never deploy by hand (no SSH, Samba or copying into `custom_components`). Deploy = release, then a HACS download of that version, then a restart, done from the Home Assistant operations repository.
-- **GitHub only.** Use no connector other than GitHub from this repository (no issue trackers, email, chat, calendars, website or marketing tools).
-- **The maintainer merges and releases.** In practice that is one of the maintainer's own interactive sessions outside this repository, once CI passes and an independent review of the latest commit says merge; it is never a session in this repository. Here: open a pull request, wait for CI (`gh pr checks --watch`), and stop. Never create, move or delete tags or releases, never dispatch the Release workflow, never rename or delete the repository, never force-push. Never release a CI-only or docs-only change. See `docs/release.md`.
+- **Synthetic data only.** Never put a real Watercare account or meter number, email, name, address, token, balance, usage or cost figure, or the dates of a real bill, in code, tests, docs, commits, PRs or issues. Use the values in `tests/common.py`.
+- **No secrets.** CI runs a secret scan on every pull request; you can run the same locally with `gitleaks git -c .gitleaks.toml .` and `gitleaks dir -c .gitleaks.toml .`. The contract tests also reject account-number and meter-id shapes and non-example emails, but they cannot recognise a real usage figure.
+- **Pull requests only.** Never push to `main`, force-push, or create, move or delete tags or releases. Tags and releases are immutable by ruleset and come only from the Release workflow, which the maintainer runs (`docs/release.md`). Never release a CI-only or docs-only change, and never deploy by hand: users install a release through HACS.
 - **Statistics continuity matters more than tidiness.** Statistic ids, entity unique ids and the config-entry migration path must keep existing installations working. Never rewrite stored statistics except through the documented one-off rebuild, and never run SQL against the recorder.
 - **Prices** change every 1 July. Add new years to `tariffs.py` with a cited source in `docs/tariffs.md`.
-- Do not open PRs or issues upstream (`brunsy/ha-watercare`) or post on forums without the maintainer's explicit approval.
-
-## How the rules are enforced
-
-`.claude/settings.json` has three layers; none of them is relied on alone. It is a copy of the guard in `lafro/ha-meridian-energy`; keep the two in step.
-
-1. **PreToolUse hooks** (the main layer):
-   - any tool whose name matches `mcp__.*__ha_.*` is refused with exit 2, whatever the connector's server name;
-   - every Bash call goes through `.claude/hooks/guard.sh` → `guard.py`, which blocks pushes to `main`, tag pushes and tag writes, force pushes and remote-ref deletion, merges, release writes and Release workflow dispatches, including `gh api`/curl spellings and `git -C`, `sh -c`, `$(...)` forms. The cases are in `tests/test_agent_guard.py`; extend them with every rule change.
-2. **Deny rules** for the same commands as written, and for Home Assistant connectors by their cloud and local tool prefixes (`mcp__claude_ai_Home_Assistant`, `mcp__ha-mcp`, `mcp__home-assistant`). Deny rules match a tool or command only as spelled, and in a desktop session a connector's tools carry a per-installation ID prefix that these do not match. Keep such IDs out of this public repository; a per-machine deny belongs in the gitignored `.claude/settings.local.json` or in user settings.
-3. **`deniedMcpServers`** by connector display name. Whether repository-scope entries reach a session's connectors has not been verified.
-
-The hooks match on tool names, so they work on any surface, but the guard has only been tested by feeding it events, not yet in a live session. Treat this file's rules as binding either way, and still start sessions here without a Home Assistant connector attached.
 
 ## Working
 
@@ -32,7 +17,6 @@ The hooks match on tool names, so they work on any surface, but the guard has on
 - Snapshot tests (syrupy) cover entity states and diagnostics: `tests/snapshots/`. After an intended change, run `uv run pytest --snapshot-update`, then review the `.ambr` diff before committing it.
 - Home Assistant version under test: `pyproject.toml` overrides the harness's Home Assistant beta with its release (2026.10.0). Bump `pytest-homeassistant-custom-component` to move it, and drop the override (and the `homeassistant` dev pin) once a harness release pins a final release; `test_home_assistant_under_test_matches_the_harness` fails if they drift apart. Dependabot ignores `homeassistant` on purpose.
 - `.github/workflows/compat.yml` runs weekly against the newest Home Assistant release and harness, unpinned, and opens an issue when it fails. GitHub disables scheduled workflows in a public repository after 60 days without activity; check with `gh run list --workflow compat.yml` and re-enable with `gh workflow enable compat.yml` (and `validate.yml`, `codeql.yml`).
-- `.claude/hooks/guard.py` must stay runnable on Python 3.9 with the standard library only (ruff checks it with a py39 target; a test parses it with the 3.9 grammar).
 - Branches `<type>/<slug>`, squash-merge PRs into `main`; all GitHub Actions pinned to full commit SHAs, and every checkout sets `persist-credentials: false`.
 - Upstream guidance for HA integrations: `home-assistant/core/.claude/skills` (adapt paths to `custom_components/`).
 - Question inherited behaviour. Code carried over from 1.4.1 or the original project is not right just because it exists: check it against Home Assistant's current guidance, the documented API behaviour or a test before keeping it. Prefer a test or a read-only probe to argument, and write the reasoning in `docs/` or the PR, not only the outcome.
@@ -45,4 +29,4 @@ The hooks match on tool names, so they work on any surface, but the guard has on
 - No API exposes prices. The Energy dashboard's water picker needs `unit_class="volume"`.
 - The usage and cost sensors deliberately have no state class; the external statistics feed the Energy dashboard.
 - The recorder does not work through its queue until Home Assistant has started, and start-up waits for config entries being set up. Never await a recorder task (or its `on_done`) in setup or a poll: 1.5.0 did, and held start-up for 5 minutes until the setup was cancelled between the clear and the import. Statistics run in a background task after start-up; see `docs/statistics.md#start-up-and-the-recorder`. `Recorder.async_block_till_done` covers the tasks still queued, not one the recorder is already running; that gap is harmless only because a statistic with no stored rows is always imported in full, so keep that rule.
-- The cut-over in `docs/release.md` was done before 1.5.0: this repository is `lafro/ha-watercare`, not a fork, and the old name `lafro/ha-watercare-next` only redirects here. The Release workflow still publishes only from `lafro/ha-watercare`.
+- This repository is `lafro/ha-watercare`, not a fork, and the old name `lafro/ha-watercare-next` only redirects here. The Release workflow publishes only from `lafro/ha-watercare`.

@@ -20,6 +20,7 @@ WORKFLOWS = ROOT / ".github" / "workflows"
 REPOSITORY = "https://github.com/lafro/ha-watercare"
 TEXT_SUFFIXES = {".py", ".md", ".json", ".yml", ".yaml", ".toml", ".ambr", ".sh", ""}
 SKIPPED_PARTS = {
+    ".claude",
     ".git",
     ".venv",
     ".mypy_cache",
@@ -37,8 +38,7 @@ def _text_files() -> list[Path]:
         files.extend(
             Path(folder, name)
             for name in names
-            if name not in {"settings.local.json", ".coverage"}
-            and Path(name).suffix in TEXT_SUFFIXES
+            if name != ".coverage" and Path(name).suffix in TEXT_SUFFIXES
         )
     return files
 
