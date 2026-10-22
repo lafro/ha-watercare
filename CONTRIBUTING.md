@@ -28,7 +28,7 @@ Keep tool caches out of the repository (uv uses its global cache by default). Ha
 - Treat API responses as untrusted input.
 - Never log request payloads, response bodies, headers or identifiers. Use `%`-style logging.
 - Update the README, CHANGELOG and `docs/` for user-visible changes.
-- Pull requests must pass Python, Hassfest, HACS, dependency review, CodeQL and the content checks: a secret scan, and a check against a private list of terms that must never be published (it is skipped for pull requests from forks). `main` takes squash merges only.
+- Pull requests must pass Python, Hassfest, HACS, dependency review, CodeQL and the content checks: a secret scan, and a check against a private list of terms that must never be published (pull requests from forks and Dependabot skip it, because they get no repository secrets). `main` takes squash merges only.
 
 ## Releases
 

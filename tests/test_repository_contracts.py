@@ -63,7 +63,7 @@ def test_release_publishes_only_the_verified_main_commit() -> None:
     assert jobs["release"]["needs"] == ["python", "hassfest", "hacs"]
     for name in ("python", "hassfest", "hacs"):
         assert jobs[name]["if"] == "github.ref == 'refs/heads/main'"
-    # Only the renamed repository publishes (docs/release.md cut-over).
+    # Only lafro/ha-watercare publishes.
     assert jobs["release"]["if"] == (
         "github.ref == 'refs/heads/main' && github.repository == 'lafro/ha-watercare'"
     )
@@ -261,7 +261,7 @@ def test_check_versions_requires_the_release_repository(tmp_path: Path) -> None:
 
     check_versions.main(["v9.8.7", "--repository", "owner/repo"], tmp_path)
     check_versions.main(["--repository=owner/repo"], tmp_path)
-    with pytest.raises(SystemExit, match="cut-over"):
+    with pytest.raises(SystemExit, match="must name the repository"):
         check_versions.main(["v9.8.7", "--repository", "owner/repo-next"], tmp_path)
 
 
@@ -276,7 +276,7 @@ def test_repository_versions_and_changelog_agree(tmp_path: Path) -> None:
     assert section.strip()
     # The release only goes out from the repository the manifest names.
     check_versions.main(["--repository", "lafro/ha-watercare"])
-    with pytest.raises(SystemExit, match="cut-over"):
+    with pytest.raises(SystemExit, match="must name the repository"):
         check_versions.main(["--repository", "lafro/ha-watercare-next"])
 
 

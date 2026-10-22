@@ -77,8 +77,8 @@ def check_repository(manifest: dict[str, object], repository: str) -> None:
         if manifest.get(key) != url:
             raise SystemExit(
                 f"manifest.json {key} is {manifest.get(key)}, but this release "
-                f"runs in {home}. Finish the repository cut-over in "
-                "docs/release.md first."
+                f"runs in {home}. The manifest must name the repository the "
+                "release runs in."
             )
 
 
