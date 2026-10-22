@@ -8,8 +8,7 @@ name: Release
 #
 # It only publishes from lafro/ha-watercare, the name the manifest, the repair
 # links and HACS use: the python job checks the manifest's links against this
-# repository, and the release job is skipped anywhere else. See the cut-over
-# checklist in docs/release.md.
+# repository, and the release job is skipped anywhere else.
 
 on:
   workflow_dispatch:

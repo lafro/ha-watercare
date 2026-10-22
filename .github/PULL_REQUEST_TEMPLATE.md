@@ -13,5 +13,5 @@
 - [ ] pytest with the per-module branch-coverage gate
 - [ ] Hassfest
 - [ ] HACS validation
-- [ ] No credentials or personal data, and no real account or meter numbers, emails, addresses, balances, usage or cost figures in code, tests, docs or this PR (fixtures and examples are made up; gitleaks run before pushing)
+- [ ] No credentials or personal data, and no real account or meter numbers, emails, addresses, balances, usage or cost figures in code, tests, docs or this PR (fixtures and examples are made up; the secret scan passes)
 - [ ] User documentation and CHANGELOG updated when required

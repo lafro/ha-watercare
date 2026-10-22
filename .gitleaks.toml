@@ -1,0 +1,5 @@
+# Secret scan settings for the content-checks workflow. Run the same scans
+# locally with `gitleaks git -c .gitleaks.toml .` and
+# `gitleaks dir -c .gitleaks.toml .`.
+[extend]
+useDefault = true

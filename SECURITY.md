@@ -24,4 +24,4 @@ The OAuth client id in the code is the public identifier of Watercare's mobile a
 
 - Every GitHub Action is pinned to a full commit SHA, and every checkout drops the job token (`persist-credentials: false`).
 - Known residual: two validators run container images that the SHA pin does not freeze. `hacs/action` runs `ghcr.io/hacs/action:main`, and the Hassfest action runs `ghcr.io/home-assistant/hassfest` without a tag, so either image can change under the same pin. They run in their own jobs with read-only contents permission, and the Release workflow's only job with write permission uses nothing from them but their pass or fail. Keep them in separate, read-only jobs.
-- The test suite rejects anything shaped like a Watercare account number or meter id, and any email address outside `example.com`, `example.org` and `example.invalid`. Contributors run `gitleaks` before pushing (see CONTRIBUTING.md).
+- The test suite rejects anything shaped like a Watercare account number or meter id, and any email address outside `example.com`, `example.org` and `example.invalid`. CI also runs a gitleaks secret scan on every pull request (see CONTRIBUTING.md).

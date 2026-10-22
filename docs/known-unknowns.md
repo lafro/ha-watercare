@@ -20,7 +20,7 @@ The honest register, as of 1.5.1. If you are about to rely on something load-bea
 
 - **Smart meters.** The smart-meter endpoints (the original project offered `dailywithstats`, `monthly` and `halfhourly`) return nothing for a mechanical account, so their real payloads have never been seen, and nothing about a smart-meter account can be tested without one. Any re-add starts by inspecting a real response. ❓
 - **Revisions to issued bills.** See A7. ❓
-- **Another bill spanning 1 July.** Only one has been compared with `pricing_date` (A5). [release.md](release.md#before-releasing-150) asked for a second, for example one issued in July 2025; no second comparison is recorded. ❓
+- **Another bill spanning 1 July.** Only one has been compared with `pricing_date` (A5). A second comparison is tracked in [#14](https://github.com/lafro/ha-watercare/issues/14). ❓
 - **APIs the integration does not use.** Watercare's app has other endpoints, and the My Account portal has its own API. The August 2026 research recorded the portal API's invoice-history and account-summary responses; the decision not to use the portal weighs the invoice history's real totals ([history-and-decisions.md](history-and-decisions.md#decisions)). Never tested: what the invoice history's bill-PDF link (`pdfLink`) returns, the shape of the app's `v1/notifications` (empty on the account checked), and whether a token from one API works on the other. ❓
 
 ## Deliberate behaviours that can surprise (not bugs)
@@ -37,7 +37,7 @@ The honest register, as of 1.5.1. If you are about to rely on something load-bea
 ## Things to re-check on a schedule
 
 - **Every 1 July:** Watercare publishes new prices. Add the year to `tariffs.py` with its source and release a new version ([tariffs.md](tariffs.md#adding-a-new-year)). Until then, users see a repair notice and cost statistics pause from the first bill that starts in the new year.
-- **Each Home Assistant release:** bump `pytest-homeassistant-custom-component`, which pins Home Assistant, and drop the `homeassistant` override in `pyproject.toml` once the harness pins a final release ([CLAUDE.md](../CLAUDE.md), "Working").
+- **Each Home Assistant release:** bump `pytest-homeassistant-custom-component`, which pins Home Assistant, and drop the `homeassistant` override in `pyproject.toml` once the harness pins a final release.
 - **Weekly:** the Compatibility workflow tests against the newest Home Assistant release and harness and opens an issue when it fails. GitHub disables scheduled workflows in a public repository after 60 days without activity; check with `gh run list --workflow compat.yml`.
 - **When a bill spanning 1 July is available:** compare its charge lines with the integration's figure (A5).
 
@@ -51,7 +51,7 @@ It recurs, so here is the answer. ✅ (code and package metadata, 9 October 2026
 
 ## How these pages were checked
 
-- First written on 8 August 2026 for 1.4.1, from the code and its git history, the manifest, PyPI metadata and the running installation, not from memory. An independent reviewer then cross-read every ✅ claim against the code, the CI configuration, the fork point and PyPI, and re-computed a cost example from a real bill. All checked claims matched except one, which was corrected: the coordinator did not branch on the endpoint; that was a documented seam, not live code (and 1.5.0 removed it).
+- First written on 8 August 2026 for 1.4.1, from the code and its git history, the manifest, PyPI metadata and a live installation, not from memory. A second review then cross-read every ✅ claim against the code, the CI configuration, the fork point and PyPI, and re-computed a cost example from a real bill. All checked claims matched except one, which was corrected: the coordinator did not branch on the endpoint; that was a documented seam, not live code (and 1.5.0 removed it).
 - Moved into this repository and updated for 1.5.1 on 9 October 2026: code claims were re-checked against 1.5.1, the claims about the original project against `brunsy/ha-watercare` at `ef7e258`, and the Python floor against Home Assistant's package metadata. Claims about Watercare's API and a real account keep their original date and could not be re-checked from this repository. Account and meter identifiers, and figures from real bills, were removed.
 - If a ✅ claim no longer matches the code, downgrade it to ⚠️ with the date rather than silently editing it, so drift stays visible.
 
