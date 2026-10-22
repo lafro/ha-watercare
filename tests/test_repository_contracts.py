@@ -61,6 +61,7 @@ def test_release_publishes_only_the_verified_main_commit() -> None:
     assert set(workflow[True]) == {"workflow_dispatch"}
     jobs = workflow["jobs"]
     assert jobs["release"]["needs"] == ["python", "hassfest", "hacs"]
+    assert jobs["release"]["environment"] == "release"
     for name in ("python", "hassfest", "hacs"):
         assert jobs[name]["if"] == "github.ref == 'refs/heads/main'"
     # Only lafro/ha-watercare publishes.
