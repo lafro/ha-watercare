@@ -10,7 +10,7 @@ license = "MIT"
 dev = [
   "homeassistant==2026.10.0",
   "mypy>=1.18.0",
-  "pytest-homeassistant-custom-component==0.13.370",
+  "pytest-homeassistant-custom-component==0.13.373",
   "ruff>=0.16.0",
 ]
 
