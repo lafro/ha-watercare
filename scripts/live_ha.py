@@ -13,7 +13,7 @@ contained:
 
 - It listens on 127.0.0.1 only, so nothing but this computer can reach it.
   The web server's settings are written to its store as already confirmed:
-  since Home Assistant 2026.10, settings from YAML are a five-minute trial
+  in current releases, settings from YAML are a five-minute trial
   that falls back to the defaults, which listen on every address. If a check
   fails at any point, ``start`` stops the instance at once.
 - Its configuration is not ``default_config``: it loads only what a live test
