@@ -202,6 +202,10 @@ def test_compat_failures_open_a_tracking_issue() -> None:
     assert "gh label create compat --force --color e99695" in script
     assert "|| true" not in script
     assert 'gh issue create --title "$title" --body "$body" --label compat' in script
+    # Anyone can open an issue with the title, so the tracking issue is found
+    # by its label and by the bot that opened it, never by title alone.
+    assert "issues?state=open&labels=compat&creator=github-actions%5Bbot%5D" in script
+    assert "--search" not in script
 
 
 def _fake_root(root: Path, version_: str = "9.8.7") -> Path:
