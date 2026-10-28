@@ -1182,14 +1182,17 @@ def first_setup(j: Journey) -> None:
     coordinator = j.wait_imported(entry_id, rebuilt=True)
     days = sum(bill.days for bill in issued)
     last = coordinator.get("last_import") or {}
+    # The diagnostics' bill count is compared, not printed: CodeQL takes any
+    # value named "billing" for private data, although these bills are synthetic.
+    every_bill = coordinator.get("billing_periods") == len(issued)
     j.check(
         "the first update imported every bill, every day",
-        coordinator.get("billing_periods") == len(issued)
+        every_bill
         and last.get("consumption_rows") == days
         and last.get("cost_rows") == len(COSTS) * days,
-        f"{coordinator.get('billing_periods')} bills, "
+        f"{'every one' if every_bill else 'not every one'} of {len(issued)} bills, "
         f"{last.get('consumption_rows')} usage and {last.get('cost_rows')} cost "
-        f"rows (expected {len(issued)}, {days}, {len(COSTS) * days})",
+        f"rows (expected {days}, {len(COSTS) * days})",
     )
     # The setup signs in before Home Assistant creates the entry, and the
     # entry's first update starts after it.
