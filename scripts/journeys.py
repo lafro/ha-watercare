@@ -36,9 +36,10 @@ report (markdown) with every check and every screen, as Home Assistant
 shows it, is written to the system's temporary directory. The instance is
 always stopped and deleted at the end; once Home Assistant has stopped, the
 stand-in's record of refusals is read once more. The exit status is non-zero
-if a journey failed or did not run, or if anything was refused. A run does
-not start while the journeys' folder exists, as another run may be using it;
-``--clean-up`` only deletes an instance a run that was killed left behind.
+if a journey failed or did not run, or if anything was refused. A run holds
+a lock for as long as it lasts, so neither a second run nor ``--clean-up``
+can start meanwhile. A run does not start either while the journeys' folder
+exists: a run that was killed left it behind, and ``--clean-up`` deletes it.
 """
 
 from __future__ import annotations
@@ -46,6 +47,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import fcntl
 import json
 import re
 import sys
@@ -79,7 +81,7 @@ from tests.watercare_http import (  # noqa: E402
 from tests.watercare_standin import Scenario  # noqa: E402
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Mapping, Sequence
+    from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 
 NAME = "journeys"
 DEFAULT_PORT = 8126
@@ -462,6 +464,9 @@ def fill(text: str, placeholders: dict[str, Any] | None) -> str:
 
 
 _PLACEHOLDER = re.compile(r"\{\w+\}")
+# The options dialog's own header for a step with no title of its own
+# (the frontend's ui.dialogs.options_flow.form.header).
+OPTIONS_HEADER = "Options"
 
 
 def render(
@@ -472,7 +477,9 @@ def render(
     ``category`` is ``config`` for a config flow, ``options`` for an options
     flow, whose handler is the entry, not the integration. A step's texts
     come from its ``translation_domain`` if it names one, its field labels
-    from the integration's own texts, as in the dialog.
+    from the integration's own texts, as in the dialog. A form with no title
+    of its own shows the integration's title, or the options dialog's header,
+    but one with neither a title nor a description of its own lacks its words.
     """
     handler = (result.get("handler") if category == "config" else None) or DOMAIN
     own = f"component.{handler}.{category}"
@@ -497,8 +504,14 @@ def render(
     fields: tuple[str, ...] = ()
     if kind == "form":
         step = str(result["step_id"])
-        title = text(f"{base}.step.{step}.title")
         body = text(f"{base}.step.{step}.description", required=False)
+        # A form needs words of its own, a title or a description: without
+        # them, its step was renamed or its texts dropped.
+        title = text(f"{base}.step.{step}.title", required=not body) or (
+            text(f"component.{handler}.title")
+            if category == "config"
+            else OPTIONS_HEADER
+        )
         if base_error := (result.get("errors") or {}).get("base"):
             error = text(f"{base}.error.{base_error}") or str(base_error)
         # Field labels come from the handler's texts alone, as in the dialog.
@@ -569,19 +582,24 @@ class JourneyResult:
         )
 
 
-def summary(results: Sequence[JourneyResult], wanted: int) -> str:
+def summary(results: Sequence[JourneyResult], wanted: int, refused: int = 0) -> str:
     """Return the run's result in a line; a journey that never ran did not pass."""
     passed = sum(result.ok for result in results)
-    return f"{passed} of {max(wanted, len(results))} journeys passed"
+    line = f"{passed} of {max(wanted, len(results))} journeys passed"
+    # A refusal fails the run, even one made after the journeys' own checks.
+    return f"{line}; FAIL: the stand-in refused {refused}" if refused else line
 
 
 def markdown(
-    results: Sequence[JourneyResult], header: dict[str, str], wanted: int = 0
+    results: Sequence[JourneyResult],
+    header: dict[str, str],
+    wanted: int = 0,
+    refused: int = 0,
 ) -> str:
     """Return the run's report."""
     lines = ["# Watercare journeys", ""]
     lines += [f"- {name}: {value}" for name, value in header.items()]
-    lines += [f"- Result: {summary(results, wanted)}", ""]
+    lines += [f"- Result: {summary(results, wanted, refused)}", ""]
     for result in results:
         lines.append(
             f"## {'PASS' if result.ok else 'FAIL'}: {result.title} "
@@ -719,20 +737,27 @@ class Journey:
 
     def screen(self, result: dict[str, Any], category: str = "config") -> Screen:
         """Record a screen the journey met."""
-        # Like the dialog: the integration's texts, plus those of any translation_domain
-        # a step names (Home Assistant's own for "reauth_successful", for example).
-        for domain in (DOMAIN, result.get("translation_domain")):
-            if domain and (domain, category) not in self.translated:
+        # The texts the dialog loads. For a config flow: the integration's
+        # texts and title, and the config texts of any translation_domain a
+        # step names (Home Assistant's own for "reauth_successful", for
+        # example). For an options flow: the integration's options texts alone.
+        wanted = [(DOMAIN, category)]
+        if category == "config":
+            wanted.append((DOMAIN, "title"))
+            if other := result.get("translation_domain"):
+                wanted.append((other, "config"))
+        for domain, kind in wanted:
+            if (domain, kind) not in self.translated:
                 (loaded,) = self.client.ws(
                     {
                         "type": "frontend/get_translations",
                         "language": "en",
-                        "category": category,
+                        "category": kind,
                         "integration": [domain],
                     }
                 )
                 self.translations.update(loaded["resources"])
-                self.translated.add((domain, category))
+                self.translated.add((domain, kind))
         shown = render(result, self.translations, category)
         self.result.screens.append(shown)
         say(
@@ -760,7 +785,7 @@ class Journey:
 
     def issued(self) -> tuple[Bill, ...]:
         """Return the bills the stand-in issues now, oldest first."""
-        issued = bills(self.current.as_of or datetime.now(NZ).date())
+        issued = bills(self.current.as_of or self.today)
         return tuple(issued[: len(issued) - self.current.withheld])
 
     def journal(
@@ -1306,8 +1331,8 @@ def reauth(j: Journey) -> None:
             None,
         )
 
+    # The journey stops here if no reauthentication starts.
     found = wait("reauthentication to start", reauth_flow, REAUTH_TIMEOUT_S)
-    j.check("the update started reauthentication", bool(found))
     statuses = _sign_in_statuses(j.journal(began))
     j.check(
         "Watercare refused the access token, the refresh token and the old password",
@@ -1416,7 +1441,7 @@ def options(j: Journey) -> None:
     j.scenario(j.watercare(withheld=1))
     entry_id, first = j.new_entry()
     before = j.check_entry(entry_id, [first])
-    year = financial_year(datetime.now(NZ).date())
+    year = financial_year(j.today)
     known = first.pricing.prices(year)
     form = j.start_options(entry_id)
     step = form.get("step_id")
@@ -1607,8 +1632,14 @@ class Run:
             say(f"  FAIL  {result.error}")
             raise
         finally:
-            journey.check_screens()
-            journey.remove_entries()
+            try:
+                journey.check_screens()
+                journey.remove_entries()
+            except Exception as err:  # noqa: BLE001
+                # What is left could change the next journey: this one fails.
+                failed = f"the clean-up failed: {type(err).__name__}: {err}"
+                result.error = f"{result.error}; {failed}" if result.error else failed
+                say(f"  FAIL  {failed}")
             result.seconds = time.monotonic() - began
         say(
             f"{'PASS' if result.ok else 'FAIL'} journey {name} ({result.seconds:.0f} s)"
@@ -1617,12 +1648,15 @@ class Run:
 
 
 def write_report(
-    results: Sequence[JourneyResult], header: dict[str, str], wanted: int
+    results: Sequence[JourneyResult],
+    header: dict[str, str],
+    wanted: int,
+    refused: int = 0,
 ) -> Path:
     """Write the report to the system's temporary directory; return its path."""
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     path = Path(tempfile.gettempdir()) / f"watercare-journeys-{stamp}.md"
-    path.write_text(markdown(results, header, wanted))
+    path.write_text(markdown(results, header, wanted, refused))
     return path
 
 
@@ -1653,23 +1687,42 @@ def fail(message: str) -> NoReturn:
     raise SystemExit(message)
 
 
+@contextlib.contextmanager
+def only_run(state: Path) -> Iterator[None]:
+    """Hold the journeys' lock, beside their folder, or stop if a run holds it.
+
+    The system releases the lock when the process ends, however it ends.
+    """
+    lock = state.with_name(f"{state.name}.lock")
+    with lock.open("a") as file:
+        try:
+            fcntl.flock(file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            fail(f"Another run is using {state}")
+        yield
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Build the instance, run the journeys, report, and delete it all."""
     args = parse(argv)
-    if args.clean_up:
-        live_ha.stop(NAME)
-        return 0
     domain = live_ha.integration_domain()
     if domain != DOMAIN:
         fail(f"These journeys are for {DOMAIN}, not {domain}")
-    names = [name for name in JOURNEYS if not args.only or name in args.only]
     state = live_ha.state_dir(domain, NAME)
-    if state.exists():
-        # It may be another run's: deleting it would end that run.
-        fail(
-            f"{state} exists: another run may be using it. "
-            "If none is, delete it with --clean-up"
-        )
+    with only_run(state):
+        if args.clean_up:
+            live_ha.stop(NAME)
+            return 0
+        if state.exists():
+            fail(
+                f"{state} exists, left by a run that was killed: --clean-up deletes it"
+            )
+        return run_journeys(args, state)
+
+
+def run_journeys(args: argparse.Namespace, state: Path) -> int:
+    """Run the journeys in a new instance in ``state``, report, and delete it all."""
+    names = [name for name in JOURNEYS if not args.only or name in args.only]
     folder = live_ha.config_dir(state) / STANDIN_FOLDER
     began = time.monotonic()
     header = {
@@ -1709,8 +1762,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             if refused:
                 say(f"FAIL the stand-in refused {len(refused)}: {refused[0]}")
-            report = write_report(results, header, len(names))
-            say(f"{summary(results, len(names))}; report: {report}")
+            report = write_report(results, header, len(names), len(refused))
+            say(f"{summary(results, len(names), len(refused))}; report: {report}")
     ran_all = len(results) == len(names) and all(result.ok for result in results)
     return 0 if ran_all and not refused else 1
 

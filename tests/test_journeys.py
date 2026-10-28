@@ -233,6 +233,7 @@ def test_changed_rows_names_lost_and_changed_days() -> None:
 # -------------------------------------------------------------------- screens
 
 _TRANSLATIONS = {
+    "component.watercare.title": "Watercare",
     "component.watercare.config.step.user.title": "Connect to Watercare",
     "component.watercare.config.step.user.description": "Sign in.",
     "component.watercare.config.step.user.data.username": "Email",
@@ -249,6 +250,38 @@ _TRANSLATIONS = {
     "component.watercare.options.step.init.data.wastewater_ratio": "Wastewater ratio",
     "component.homeassistant.config.abort.reauth_successful": "Signed in again.",
 }
+
+
+def test_a_form_without_its_own_title_shows_the_dialogs() -> None:
+    words = {
+        **_TRANSLATIONS,
+        "component.watercare.config.step.untitled.description": "Words.",
+        "component.watercare.options.step.untitled.description": "Words.",
+    }
+    config = journeys.render(
+        {"type": "form", "handler": "watercare", "step_id": "untitled"}, words
+    )
+    assert (config.title, config.missing) == ("Watercare", ())
+    options = journeys.render(
+        {"type": "form", "handler": "an-entry-id", "step_id": "untitled"},
+        words,
+        "options",
+    )
+    assert (options.title, options.missing) == (journeys.OPTIONS_HEADER, ())
+
+
+def test_a_form_with_no_words_of_its_own_lacks_them() -> None:
+    # A step renamed, or its texts dropped: only the dialog's own title shows.
+    config = journeys.render(
+        {"type": "form", "handler": "watercare", "step_id": "renamed"}, _TRANSLATIONS
+    )
+    assert (config.title, config.missing) == ("Watercare", ("step.renamed.title",))
+    options = journeys.render(
+        {"type": "form", "handler": "an-entry-id", "step_id": "renamed"},
+        _TRANSLATIONS,
+        "options",
+    )
+    assert options.missing == ("step.renamed.title",)
 
 
 def test_a_form_is_rendered_with_its_placeholders_and_error() -> None:
@@ -473,6 +506,9 @@ def test_a_journey_that_never_ran_did_not_pass() -> None:
     assert journeys.summary([passed], 1) == "1 of 1 journeys passed"
     assert journeys.summary([passed], 7) == "1 of 7 journeys passed"
     assert journeys.summary([passed, passed], 0) == "2 of 2 journeys passed"
+    assert journeys.summary([passed], 1, 2) == (
+        "1 of 1 journeys passed; FAIL: the stand-in refused 2"
+    )
 
 
 # ------------------------------------------------------------------- journey
@@ -507,11 +543,13 @@ class _Client:
         (domain,) = message["integration"]
         category = message["category"]
         self.translated.append((domain, category))
-        prefix = f"component.{domain}.{category}."
+        prefix = f"component.{domain}.{category}"
         return [
             {
                 "resources": {
-                    k: v for k, v in _TRANSLATIONS.items() if k.startswith(prefix)
+                    k: v
+                    for k, v in _TRANSLATIONS.items()
+                    if k == prefix or k.startswith(f"{prefix}.")
                 }
             }
         ]
@@ -631,12 +669,24 @@ def test_screens_load_each_domains_words_once_per_category(tmp_path: Path) -> No
         {"type": "form", "handler": "an-entry-id", "step_id": "init"}, "options"
     )
     assert options.title == "Watercare prices"
+    # The options dialog loads no other domain's texts.
+    journey.screen(
+        {
+            "type": "abort",
+            "handler": "an-entry-id",
+            "reason": "reauth_successful",
+            "translation_domain": "homeassistant",
+        },
+        "options",
+    )
     assert client.translated == [
         ("watercare", "config"),
+        ("watercare", "title"),
         ("homeassistant", "config"),
         ("watercare", "options"),
     ]
-    assert len(journey.result.screens) == 4
+    assert journey.result.screens[-1].missing == ("abort.reauth_successful",)
+    assert len(journey.result.screens) == 5
 
 
 def test_a_screen_without_its_words_fails_the_journey(tmp_path: Path) -> None:
@@ -886,6 +936,54 @@ def test_a_journey_that_crashes_fails_and_the_next_one_runs(
     assert journeys.summary(run.results, 2) == "1 of 2 journeys passed"
 
 
+def test_a_journey_whose_clean_up_fails_fails_and_the_next_one_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(_self: Journey) -> None:
+        raise ValueError("Expecting value: line 1 column 1 (char 0)")
+
+    monkeypatch.setattr(journeys, "first_setup", lambda j: j.check("ok", ok=True))
+    monkeypatch.setattr(journeys, "wrong_password", lambda j: j.check("ok", ok=True))
+    monkeypatch.setattr(Journey, "clear_statistics", lambda _self: None)
+    monkeypatch.setattr(Journey, "remove_entries", broken)
+    run = journeys.Run(live_ha.Instance(tmp_path, 8126, None, "1"), tmp_path, _TODAY)  # type: ignore[arg-type]
+    failed = run.run("first_setup")
+    assert not failed.ok
+    assert failed.error == (
+        "the clean-up failed: ValueError: Expecting value: line 1 column 1 (char 0)"
+    )
+    monkeypatch.setattr(Journey, "remove_entries", lambda _self: None)
+    assert run.run("wrong_password").ok
+
+
+def test_a_failed_journey_whose_clean_up_fails_reports_both(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def stops(_journey: Journey) -> None:
+        raise JourneyError("timed out")
+
+    def broken(_self: Journey) -> None:
+        raise ValueError("not JSON")
+
+    monkeypatch.setattr(journeys, "first_setup", stops)
+    monkeypatch.setattr(Journey, "clear_statistics", lambda _self: None)
+    monkeypatch.setattr(Journey, "remove_entries", broken)
+    run = journeys.Run(live_ha.Instance(tmp_path, 8126, None, "1"), tmp_path, _TODAY)  # type: ignore[arg-type]
+    failed = run.run("first_setup")
+    assert failed.error == (
+        "JourneyError: timed out; the clean-up failed: ValueError: not JSON"
+    )
+
+
+def test_the_bills_are_those_issued_up_to_the_runs_day(tmp_path: Path) -> None:
+    # A day long before the clock's: its bills differ from today's.
+    day = date(2025, 3, 3)
+    journey = Journey(_Client(), tmp_path, JourneyResult("x", "X"), day)
+    assert journey.current.as_of is None
+    assert journey.issued() == tuple(bills(day))
+    assert journey.issued() != tuple(bills(_TODAY))
+
+
 def test_an_interrupted_journey_fails_and_stops_the_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -978,11 +1076,30 @@ def test_a_run_never_takes_over_an_existing_instance(
     monkeypatch.setattr(live_ha, "state_dir", lambda *_args: tmp_path / "state")
     monkeypatch.setattr(live_ha, "stop", _stop(stopped, tmp_path / "state"))
     monkeypatch.setattr(live_ha, "launch", lambda *_a, **_k: launched.append(True))
-    with pytest.raises(SystemExit, match="another run may be using it"):
+    with pytest.raises(SystemExit, match="left by a run that was killed"):
         journeys.main([])
     assert stopped == []
     assert launched == []
     assert (tmp_path / "state").is_dir()
+
+
+def test_nothing_starts_while_another_run_holds_the_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stopped: list[str] = []
+    launched: list[bool] = []
+    monkeypatch.setattr(live_ha, "state_dir", lambda *_args: tmp_path / "state")
+    monkeypatch.setattr(live_ha, "stop", _stop(stopped, tmp_path / "state"))
+    monkeypatch.setattr(live_ha, "launch", lambda *_a, **_k: launched.append(True))
+    with journeys.only_run(tmp_path / "state"):
+        for argv in ([], ["--clean-up"]):
+            with pytest.raises(SystemExit, match="Another run is using"):
+                journeys.main(argv)
+    assert stopped == []
+    assert launched == []
+    # Released with the run: a clean-up can go ahead.
+    assert journeys.main(["--clean-up"]) == 0
+    assert stopped == ["journeys"]
 
 
 def test_a_run_reports_and_exits_non_zero_when_a_journey_fails(
@@ -1090,9 +1207,10 @@ def test_a_refusal_after_the_last_check_fails_the_run(
     assert journeys.main(["--only", "first_setup"]) == 1
     out = capsys.readouterr().out
     assert "FAIL the stand-in refused 1: t connection 192.0.2.1" in out
-    assert "1 of 1 journeys passed" in out
+    assert "1 of 1 journeys passed; FAIL: the stand-in refused 1" in out
     (report,) = tmp_path.glob("watercare-journeys-*.md")
     assert "Refused by the stand-in: 1: t connection 192.0.2.1" in report.read_text()
+    assert "Result: 1 of 1 journeys passed; FAIL" in report.read_text()
 
 
 def test_the_journeys_refuse_another_integration(

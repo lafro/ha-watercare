@@ -5,8 +5,8 @@ instance's site-packages as the package ``watercare_standin``, with the
 tests' fake (``watercare_http.py``) beside it, and a ``.pth`` file that calls
 ``install_or_exit`` when the interpreter starts: before Home Assistant or the
 integration imports anything, after a restart too. If the stand-in cannot be
-installed, the interpreter exits at once, so Home Assistant never runs
-without it.
+imported or installed, the interpreter exits at once, so Home Assistant never
+runs without it.
 
 ``install`` patches the process's ways out:
 
@@ -76,10 +76,21 @@ SCENARIO = "scenario.json"
 JOURNAL = "journal.jsonl"
 REFUSED = "refused.log"
 INSTALLED = "installed-{pid}"
-# The ``.pth`` line: a failure exits before Home Assistant can start.
-PTH_LINE = f"import {PACKAGE}; {PACKAGE}.install_or_exit()\n"
 # The exit status of an interpreter the stand-in could not be installed in.
 EXIT_NOT_INSTALLED = 70
+# The ``.pth`` line, run as the interpreter starts. If the stand-in cannot be
+# imported or installed, the interpreter exits before Home Assistant can
+# start: Python would only print a failed import in a ``.pth`` line, and go on.
+# The traceback goes to the interpreter's error output (hass.out).
+PTH_LINE = (
+    "import os; exec("
+    + repr(
+        f"try:\n import {PACKAGE}\n {PACKAGE}.install_or_exit()\n"
+        "except BaseException:\n import traceback\n traceback.print_exc()\n"
+        f" os._exit({EXIT_NOT_INSTALLED})"
+    )
+    + ")\n"
+)
 # The integration's client module: its URLs name the hosts the fake answers.
 CLIENT_MODULE = "custom_components.watercare.api"
 # watercare_http's synthetic login, which a scenario has unless it says
