@@ -8,23 +8,13 @@ license = "MIT"
 
 [dependency-groups]
 dev = [
-  "homeassistant==2026.10.0",
   "mypy>=1.18.0",
-  "pytest-homeassistant-custom-component==0.13.370",
+  "pytest-homeassistant-custom-component==0.13.375",
   "ruff>=0.16.0",
 ]
 
 [tool.uv]
 package = false
-override-dependencies = [
-  # pytest-homeassistant-custom-component 0.13.370 pins the 2026.10.0b4 beta.
-  # Test against the 2026.10.0 release that production runs. Drop this, and
-  # the homeassistant pin above, once a harness release pins 2026.10.0 or
-  # later; from then on bump only the harness. The override only ever swaps
-  # a beta for its own release: test_home_assistant_under_test_matches_the_
-  # harness fails if a harness bump would leave it testing an older release.
-  "homeassistant==2026.10.0",
-]
 
 [tool.pytest.ini_options]
 addopts = "--strict-config --strict-markers --cov=custom_components.watercare --cov-branch --cov-report=term-missing --cov-report=xml --cov-fail-under=95"

@@ -286,10 +286,13 @@ def test_repository_versions_and_changelog_agree(tmp_path: Path) -> None:
 
 
 def test_home_assistant_under_test_matches_the_harness() -> None:
-    """The uv override may swap the harness's beta for that release only.
+    """Pull requests test the release the harness pins, or that beta's release.
 
-    pyproject.toml overrides homeassistant, so a harness bump that pins a
-    newer release would otherwise still test the old one and pass.
+    A uv override in pyproject.toml may swap a harness's beta for its own
+    release, and only that: a harness bump that pins a newer release would
+    otherwise still test the old one and pass. The release is never older
+    than the minimum hacs.json declares (harness 0.13.370 pinned
+    2026.10.0b4, below the minimum 2026.10.0).
     """
     harness_pin = next(
         requirement
@@ -300,6 +303,8 @@ def test_home_assistant_under_test_matches_the_harness() -> None:
     installed = Version(version("homeassistant"))
     assert installed.base_version == pinned.base_version, (installed, pinned)
     assert not installed.is_prerelease
+    minimum = Version(json.loads((ROOT / "hacs.json").read_text())["homeassistant"])
+    assert installed >= minimum, (installed, minimum)
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())
     overrides = project["tool"]["uv"].get("override-dependencies", [])
     if not pinned.is_prerelease:
