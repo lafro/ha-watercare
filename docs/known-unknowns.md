@@ -14,7 +14,7 @@ The honest register, as of 1.5.1. If you are about to rely on something load-bea
 | A6 | The fixed charge accrues as the yearly charge ÷ 365 per day, in every year. | Watercare invoices it "at a daily rate"; leap years have not been checked against a bill ([tariffs.md](tariffs.md#how-a-bill-is-priced)). ⚠️ | A bill in a leap year would be off by a fraction of one day's fixed charge. |
 | A7 | Watercare corrects an estimated reading through the next bill, not by revising a bill it has already issued. | [statistics.md](statistics.md#anchoring-to-stored-history) and the README rely on it, but the evidence is not recorded in this repository. Up to 1.4.x the recompute-from-zero design was valued partly because a revision would flow through all later sums. ⚠️ | A revised bill would not reach days already stored, because polls only append; the stored totals would stay as first imported. A one-off manual rebuild ([statistics.md](statistics.md#when-the-rebuild-is-skipped)) would pick the revision up. |
 | A8 | A `null` or missing `waterUsage` means no water was used. | Carried over from 1.4.1, whose sensor treated both as zero, not from an observed response. ⚠️ | A bill recorded as zero, and kept as zero by the append-only polls. Low. |
-| A9 | Home Assistant 2026.10.0 is the minimum. | Up to 1.4.x the README named 2026.3 (for locally served brand images) without testing older releases. From 1.5.0, `hacs.json` requires 2026.10.0, the release the tests run against, and the weekly compatibility workflow tests the newest release and test harness. ✅ (code) | None known. |
+| A9 | Home Assistant 2026.10.0 is the minimum. | Up to 1.4.x the README named 2026.3 (for locally served brand images) without testing older releases. From 1.5.0, `hacs.json` requires 2026.10.0. Pull requests are tested on the release the test harness pins, which the contract tests keep at or above that minimum, and the weekly compatibility workflow tests the newest release and test harness. ✅ (code) | None known. |
 
 ## Known unknowns
 
@@ -37,7 +37,7 @@ The honest register, as of 1.5.1. If you are about to rely on something load-bea
 ## Things to re-check on a schedule
 
 - **Every 1 July:** Watercare publishes new prices. Add the year to `tariffs.py` with its source and release a new version ([tariffs.md](tariffs.md#adding-a-new-year)). Until then, users see a repair notice and cost statistics pause from the first bill that starts in the new year.
-- **Each Home Assistant release:** bump `pytest-homeassistant-custom-component`, which pins Home Assistant, and drop the `homeassistant` override in `pyproject.toml` once the harness pins a final release.
+- **Each Home Assistant release:** bump `pytest-homeassistant-custom-component`, which pins Home Assistant. A `homeassistant` override in `pyproject.toml` is used only while the newest harness pins just a beta (`CLAUDE.md`).
 - **Weekly:** the Compatibility workflow tests against the newest Home Assistant release and harness and opens an issue when it fails. GitHub disables scheduled workflows in a public repository after 60 days without activity; check with `gh run list --workflow compat.yml`.
 - **When a bill spanning 1 July is available:** compare its charge lines with the integration's figure (A5).
 
