@@ -12,7 +12,7 @@ import contextlib
 import threading
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -35,7 +35,6 @@ from custom_components.watercare.const import (
     CONF_WASTEWATER_RATIO,
     DATA_STATISTICS_VERSION,
     DOMAIN,
-    NZ_TIMEZONE,
     STAT_CONSUMPTION,
     STAT_CONSUMPTION_COST,
     STAT_TOTAL_COST,
@@ -45,56 +44,21 @@ from custom_components.watercare.const import (
 from custom_components.watercare.statistics import day_start
 from custom_components.watercare.tariffs import PUBLISHED_TARIFFS
 
-ACCOUNT_NUMBER = "1000001-01"
-METER_NUMBER = "TEST-METER-0001"
-EMAIL = "someone@example.com"
-PASSWORD = "synthetic-password"
+# The synthetic account, login and payload builders live with the fake
+# Watercare, which the journeys' stand-in also loads outside the harness.
+from .watercare_http import (
+    ACCOUNT_NUMBER,
+    EMAIL,
+    METER_NUMBER,
+    PASSWORD,
+    account_payload,
+    api_period,
+)
+
 REFRESH_TOKEN = "synthetic-refresh-token"
 ENTRY_ID = "watercare_test_entry"
 
-ACCOUNT_PAYLOAD: list[dict[str, Any]] = [
-    {
-        "userAccountId": 1,
-        "accountNumber": ACCOUNT_NUMBER,
-        "accountName": "Test Account",
-        "amountDue": 123.45,
-        "accountBalance": 123.45,
-        "overdueAmount": 0,
-        "dueDate": "2026-09-25T23:59:59Z",
-        "hasDueDate": True,
-        "meterType": "mechanical",
-        "meters": [{"id": METER_NUMBER}],
-    }
-]
-
-
-def api_date(day: date) -> str:
-    """Return a date the way Watercare sends it: Auckland midnight in UTC."""
-    instant = datetime.combine(day, time.min, tzinfo=NZ_TIMEZONE).astimezone(UTC)
-    return instant.strftime("%Y-%m-%dT%H:%M:%S.000Z")
-
-
-def api_period(
-    start: date,
-    end: date,
-    usage: int,
-    *,
-    days: int | None = None,
-    reading: str = "A",
-) -> dict[str, Any]:
-    """Return one mechanicalmonthly item."""
-    number_of_days = days if days is not None else (end - start).days + 1
-    return {
-        "billingPeriodFromDate": api_date(start),
-        "billingPeriodToDate": api_date(end),
-        "waterUsage": usage,
-        "readingType": reading,
-        "statistics": {
-            "dailyAverage": round(usage / number_of_days),
-            "numberOfDays": number_of_days,
-            "efficiency": {"currentHouseholdBand": 2, "usageToLowerBand": 25},
-        },
-    }
+ACCOUNT_PAYLOAD: list[dict[str, Any]] = account_payload(ACCOUNT_NUMBER, METER_NUMBER)
 
 
 def default_periods() -> list[dict[str, Any]]:
