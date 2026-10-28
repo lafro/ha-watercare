@@ -233,6 +233,7 @@ def test_changed_rows_names_lost_and_changed_days() -> None:
 # -------------------------------------------------------------------- screens
 
 _TRANSLATIONS = {
+    "component.watercare.title": "Watercare",
     "component.watercare.config.step.user.title": "Connect to Watercare",
     "component.watercare.config.step.user.description": "Sign in.",
     "component.watercare.config.step.user.data.username": "Email",
@@ -252,7 +253,11 @@ _TRANSLATIONS = {
 
 
 def test_a_form_without_its_own_title_shows_the_dialogs() -> None:
-    words = {**_TRANSLATIONS, "component.watercare.title": "Watercare"}
+    words = {
+        **_TRANSLATIONS,
+        "component.watercare.config.step.untitled.description": "Words.",
+        "component.watercare.options.step.untitled.description": "Words.",
+    }
     config = journeys.render(
         {"type": "form", "handler": "watercare", "step_id": "untitled"}, words
     )
@@ -263,6 +268,20 @@ def test_a_form_without_its_own_title_shows_the_dialogs() -> None:
         "options",
     )
     assert (options.title, options.missing) == (journeys.OPTIONS_HEADER, ())
+
+
+def test_a_form_with_no_words_of_its_own_lacks_them() -> None:
+    # A step renamed, or its texts dropped: only the dialog's own title shows.
+    config = journeys.render(
+        {"type": "form", "handler": "watercare", "step_id": "renamed"}, _TRANSLATIONS
+    )
+    assert (config.title, config.missing) == ("Watercare", ("step.renamed.title",))
+    options = journeys.render(
+        {"type": "form", "handler": "an-entry-id", "step_id": "renamed"},
+        _TRANSLATIONS,
+        "options",
+    )
+    assert options.missing == ("step.renamed.title",)
 
 
 def test_a_form_is_rendered_with_its_placeholders_and_error() -> None:
@@ -400,7 +419,7 @@ def test_field_labels_come_from_the_handlers_words() -> None:
         _TRANSLATIONS,
     )
     assert screen.fields == ("Email",)
-    assert screen.missing == ("component.watercare.title", "error.invalid_auth")
+    assert screen.missing == ("step.user.title", "error.invalid_auth")
     options = journeys.render(
         {
             "type": "form",
@@ -524,11 +543,13 @@ class _Client:
         (domain,) = message["integration"]
         category = message["category"]
         self.translated.append((domain, category))
-        prefix = f"component.{domain}.{category}."
+        prefix = f"component.{domain}.{category}"
         return [
             {
                 "resources": {
-                    k: v for k, v in _TRANSLATIONS.items() if k.startswith(prefix)
+                    k: v
+                    for k, v in _TRANSLATIONS.items()
+                    if k == prefix or k.startswith(f"{prefix}.")
                 }
             }
         ]
@@ -933,6 +954,34 @@ def test_a_journey_whose_clean_up_fails_fails_and_the_next_one_runs(
     )
     monkeypatch.setattr(Journey, "remove_entries", lambda _self: None)
     assert run.run("wrong_password").ok
+
+
+def test_a_failed_journey_whose_clean_up_fails_reports_both(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def stops(_journey: Journey) -> None:
+        raise JourneyError("timed out")
+
+    def broken(_self: Journey) -> None:
+        raise ValueError("not JSON")
+
+    monkeypatch.setattr(journeys, "first_setup", stops)
+    monkeypatch.setattr(Journey, "clear_statistics", lambda _self: None)
+    monkeypatch.setattr(Journey, "remove_entries", broken)
+    run = journeys.Run(live_ha.Instance(tmp_path, 8126, None, "1"), tmp_path, _TODAY)  # type: ignore[arg-type]
+    failed = run.run("first_setup")
+    assert failed.error == (
+        "JourneyError: timed out; the clean-up failed: ValueError: not JSON"
+    )
+
+
+def test_the_bills_are_those_issued_up_to_the_runs_day(tmp_path: Path) -> None:
+    # A day long before the clock's: its bills differ from today's.
+    day = date(2025, 3, 3)
+    journey = Journey(_Client(), tmp_path, JourneyResult("x", "X"), day)
+    assert journey.current.as_of is None
+    assert journey.issued() == tuple(bills(day))
+    assert journey.issued() != tuple(bills(_TODAY))
 
 
 def test_an_interrupted_journey_fails_and_stops_the_run(

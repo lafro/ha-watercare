@@ -478,7 +478,8 @@ def render(
     flow, whose handler is the entry, not the integration. A step's texts
     come from its ``translation_domain`` if it names one, its field labels
     from the integration's own texts, as in the dialog. A form with no title
-    of its own shows the integration's title, or the options dialog's header.
+    of its own shows the integration's title, or the options dialog's header,
+    but one with neither a title nor a description of its own lacks its words.
     """
     handler = (result.get("handler") if category == "config" else None) or DOMAIN
     own = f"component.{handler}.{category}"
@@ -503,12 +504,14 @@ def render(
     fields: tuple[str, ...] = ()
     if kind == "form":
         step = str(result["step_id"])
-        title = text(f"{base}.step.{step}.title", required=False) or (
+        body = text(f"{base}.step.{step}.description", required=False)
+        # A form needs words of its own, a title or a description: without
+        # them, its step was renamed or its texts dropped.
+        title = text(f"{base}.step.{step}.title", required=not body) or (
             text(f"component.{handler}.title")
             if category == "config"
             else OPTIONS_HEADER
         )
-        body = text(f"{base}.step.{step}.description", required=False)
         if base_error := (result.get("errors") or {}).get("base"):
             error = text(f"{base}.error.{base_error}") or str(base_error)
         # Field labels come from the handler's texts alone, as in the dialog.
@@ -1634,10 +1637,9 @@ class Run:
                 journey.remove_entries()
             except Exception as err:  # noqa: BLE001
                 # What is left could change the next journey: this one fails.
-                result.error = result.error or (
-                    f"the clean-up failed: {type(err).__name__}: {err}"
-                )
-                say(f"  FAIL  {result.error}")
+                failed = f"the clean-up failed: {type(err).__name__}: {err}"
+                result.error = f"{result.error}; {failed}" if result.error else failed
+                say(f"  FAIL  {failed}")
             result.seconds = time.monotonic() - began
         say(
             f"{'PASS' if result.ok else 'FAIL'} journey {name} ({result.seconds:.0f} s)"
