@@ -26,7 +26,9 @@ from custom_components.watercare.models import AccountSummary
 
 from .common import ACCOUNT_PAYLOAD, default_periods
 
-pytest_plugins = "pytest_homeassistant_custom_component"
+# ha_deprecations fails the run on any deprecation Home Assistant reports for
+# this integration; see that module.
+pytest_plugins = ["pytest_homeassistant_custom_component", "tests.ha_deprecations"]
 
 
 @pytest.fixture(autouse=True, scope="session")
