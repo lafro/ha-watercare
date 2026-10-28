@@ -17,9 +17,13 @@ Neither Watercare nor its Azure AD B2C sign-in is ever contacted. A stand-in
 before Home Assistant first starts, answers the integration's requests at
 the HTTP level from the tests' fake (``tests/watercare_http.py``), so the
 integration's own client signs in, refreshes its token and reads the
-account and the bills unchanged. It refuses every other request that would
-leave this computer and records it, with its host only. Every value is
-synthetic, the logins included.
+account and the bills unchanged. In Home Assistant's process it refuses
+every other aiohttp request, TCP connection and name lookup that would leave
+this computer, and records it with its host only. Every value is synthetic,
+the logins included. It does not cover UDP, reverse lookups, resolvers
+written in C or other programs: building the instance, and Home Assistant's
+first start, download Home Assistant and the requirements it pins from PyPI
+(through uv), as for the live test.
 
 Each journey drives Home Assistant through its REST and websocket APIs, as
 the frontend would, with the owner's token, and checks what came of it: the
@@ -30,9 +34,11 @@ docs/statistics.md defines them. ``--only`` runs some of them, in their
 usual order. Each check and each journey is printed as PASS or FAIL, and a
 report (markdown) with every check and every screen, as Home Assistant
 shows it, is written to the system's temporary directory. The instance is
-always stopped and deleted at the end, and the exit status is non-zero if
-anything failed. ``--clean-up`` only deletes an instance a run that was
-killed left behind.
+always stopped and deleted at the end; once Home Assistant has stopped, the
+stand-in's record of refusals is read once more. The exit status is non-zero
+if a journey failed or did not run, or if anything was refused. A run does
+not start while the journeys' folder exists, as another run may be using it;
+``--clean-up`` only deletes an instance a run that was killed left behind.
 """
 
 from __future__ import annotations
@@ -41,6 +47,7 @@ import argparse
 import asyncio
 import contextlib
 import json
+import re
 import sys
 import tempfile
 import time
@@ -100,6 +107,8 @@ NEW_PASSWORD = "synthetic-journey-password-2"  # noqa: S105 - synthetic
 WRONG_PASSWORD = "not-the-synthetic-password"  # noqa: S105 - synthetic
 # What the options journey enters: a ratio and prices no year has.
 NEW_RATIO = Decimal("0.95")
+# A sign-in from a form: the B2C steps, then the account it reaches.
+SIGN_IN = ["authorize", "self_asserted", "confirmed", "token", "account"]
 # Values are compared to the expected ones within this (litres or NZD).
 TOLERANCE = 1e-6
 # The sensors round the last bill's cost to the cent.
@@ -375,8 +384,11 @@ def history_problems(kind: str, rows: Sequence[Row], expected: Expected) -> list
     bill; each ``sum`` step equal to its day, the first ``sum`` its own day.
     """
     wanted = [item.day for item in expected.days[kind]]
+    if not wanted:
+        # A history with no days proves nothing.
+        return [f"no days expected; {len(rows)} rows found"]
     if not rows:
-        return [f"no rows, expected {_span(wanted)}"] if wanted else []
+        return [f"no rows, expected {_span(wanted)}"]
     problems = _placement_problems(rows)
     found = [row.day for row in rows]
     if found != wanted:
@@ -391,6 +403,8 @@ def history_problems(kind: str, rows: Sequence[Row], expected: Expected) -> list
 
 def changed_rows(before: Sequence[Row], after: Sequence[Row]) -> list[str]:
     """Return every day of ``before`` that ``after`` lost or holds otherwise."""
+    if not before:
+        return ["no days to compare"]
     now = {row.start: row for row in after}
     changed: list[str] = []
     for row in before:
@@ -447,25 +461,35 @@ def fill(text: str, placeholders: dict[str, Any] | None) -> str:
     return text
 
 
+_PLACEHOLDER = re.compile(r"\{\w+\}")
+
+
 def render(
     result: dict[str, Any], translations: dict[str, str], category: str = "config"
 ) -> Screen:
     """Return a flow result as Home Assistant's dialog shows it.
 
     ``category`` is ``config`` for a config flow, ``options`` for an options
-    flow, whose handler is the entry, not the integration.
+    flow, whose handler is the entry, not the integration. A step's texts
+    come from its ``translation_domain`` if it names one, its field labels
+    from the integration's own texts, as in the dialog.
     """
-    handler = result.get("handler") if category == "config" else None
-    domain = result.get("translation_domain") or handler or DOMAIN
-    base = f"component.{domain}.{category}"
+    handler = (result.get("handler") if category == "config" else None) or DOMAIN
+    own = f"component.{handler}.{category}"
+    base = f"component.{result.get('translation_domain') or handler}.{category}"
     placeholders = result.get("description_placeholders")
     missing: list[str] = []
 
     def text(key: str, *, required: bool = True) -> str:
+        short = key.removeprefix(f"{own}.").removeprefix(f"{base}.")
         if key in translations:
-            return fill(translations[key], placeholders)
+            filled = fill(translations[key], placeholders)
+            if unfilled := _PLACEHOLDER.findall(filled):
+                # The dialog shows a translation error instead.
+                missing.append(f"{short} (no value for {', '.join(unfilled)})")
+            return filled
         if required:
-            missing.append(key.removeprefix(f"{base}."))
+            missing.append(short)
         return ""
 
     kind = str(result.get("type"))
@@ -477,8 +501,9 @@ def render(
         body = text(f"{base}.step.{step}.description", required=False)
         if base_error := (result.get("errors") or {}).get("base"):
             error = text(f"{base}.error.{base_error}") or str(base_error)
+        # Field labels come from the handler's texts alone, as in the dialog.
         fields = tuple(
-            text(f"{base}.step.{step}.data.{item['name']}") or str(item["name"])
+            text(f"{own}.step.{step}.data.{item['name']}") or str(item["name"])
             for item in result.get("data_schema") or []
         )
     elif kind == "progress":
@@ -544,12 +569,19 @@ class JourneyResult:
         )
 
 
-def markdown(results: Sequence[JourneyResult], header: dict[str, str]) -> str:
-    """Return the run's report."""
+def summary(results: Sequence[JourneyResult], wanted: int) -> str:
+    """Return the run's result in a line; a journey that never ran did not pass."""
     passed = sum(result.ok for result in results)
+    return f"{passed} of {max(wanted, len(results))} journeys passed"
+
+
+def markdown(
+    results: Sequence[JourneyResult], header: dict[str, str], wanted: int = 0
+) -> str:
+    """Return the run's report."""
     lines = ["# Watercare journeys", ""]
     lines += [f"- {name}: {value}" for name, value in header.items()]
-    lines += [f"- Result: {passed} of {len(results)} journeys passed", ""]
+    lines += [f"- Result: {summary(results, wanted)}", ""]
     for result in results:
         lines.append(
             f"## {'PASS' if result.ok else 'FAIL'}: {result.title} "
@@ -649,6 +681,12 @@ def wait(what: str, ready: Callable[[], Any], timeout: float) -> Any:
 # -------------------------------------------------------------------- journey
 
 
+def read_refused(folder: Path) -> list[str]:
+    """Return the stand-in's record of what it refused in this run, a line each."""
+    path = folder / standin.REFUSED
+    return path.read_text().splitlines() if path.is_file() else []
+
+
 @dataclass(slots=True)
 class Journey:
     """One journey's context: the instance, the stand-in and what it found."""
@@ -725,19 +763,24 @@ class Journey:
         issued = bills(self.current.as_of or datetime.now(NZ).date())
         return tuple(issued[: len(issued) - self.current.withheld])
 
-    def journal(self, since: datetime | None = None) -> list[dict[str, Any]]:
-        """Return the requests the stand-in answered, from ``since`` on."""
+    def journal(
+        self, since: datetime | None = None, until: datetime | None = None
+    ) -> list[dict[str, Any]]:
+        """Return the requests the stand-in answered from ``since``, to ``until``."""
         path = self.folder / standin.JOURNAL
         if not path.is_file():
             return []
         records = [json.loads(line) for line in path.read_text().splitlines() if line]
-        if since is None:
-            return records
-        return [r for r in records if datetime.fromisoformat(r["at"]) >= since]
+        return [
+            r
+            for r in records
+            if (since is None or datetime.fromisoformat(r["at"]) >= since)
+            and (until is None or datetime.fromisoformat(r["at"]) < until)
+        ]
 
-    def operations(self, since: datetime) -> list[str]:
-        """Return the operations the stand-in answered from ``since`` on."""
-        return [str(record.get("operation")) for record in self.journal(since)]
+    def operations(self, since: datetime, until: datetime | None = None) -> list[str]:
+        """Return the operations the stand-in answered from ``since``, to ``until``."""
+        return [str(r.get("operation")) for r in self.journal(since, until)]
 
     # ------------------------------------------------------------------ flows
 
@@ -823,6 +866,13 @@ class Journey:
             "GET", f"/api/config/config_entries/entry?domain={DOMAIN}"
         )
         return next((e for e in entries if e["entry_id"] == entry_id), None)
+
+    def created(self, entry_id: str) -> datetime:
+        """Return when Home Assistant created the entry."""
+        entry = self.entry(entry_id)
+        if entry is None:
+            raise JourneyError(f"entry {entry_id} is gone")
+        return datetime.fromtimestamp(float(entry["created_at"]), UTC)
 
     def diagnostics(self, entry_id: str) -> dict[str, Any]:
         """Return the entry's diagnostics."""
@@ -948,7 +998,7 @@ class Journey:
     ) -> dict[str, list[Row]]:
         """Run the checks every journey that made an entry ends with.
 
-        The entry is loaded; its sensors exist and have states, and show the
+        The entry is loaded; its sensors exist, none unavailable, and show the
         newest bill; the four statistics hold the days they should
         (``history_problems``); the repair notices are those the prices call
         for; and the stand-in refused no request. Returns the rows.
@@ -970,7 +1020,7 @@ class Journey:
             if state == "unavailable"
         )
         self.check(
-            "the sensors exist and have states",
+            "the sensors exist and none is unavailable",
             bool(entities) and not unavailable,
             f"{len(entities)} sensors"
             + (f"; unavailable: {', '.join(unavailable)}" if unavailable else ""),
@@ -1043,18 +1093,22 @@ class Journey:
 
     def check_nothing_refused(self) -> None:
         """Check that the stand-in refused nothing and answered every request."""
-        path = self.folder / standin.REFUSED
-        refused = path.read_text().splitlines() if path.is_file() else []
+        refused = read_refused(self.folder)
         self.check(
             "the stand-in refused no outbound request",
             not refused,
             f"{len(refused)} refused: {'; '.join(refused[:3])}" if refused else "",
         )
-        errors = [r["error"] for r in self.journal() if "error" in r]
+        records = self.journal()
+        errors = [r["error"] for r in records if "error" in r]
         self.check(
             "the fake answered every request the integration sent",
-            not errors,
-            "; ".join(sorted(set(errors))[:3]),
+            bool(records) and not errors,
+            "; ".join(sorted(set(errors))[:3])
+            if errors
+            else f"answered: {len(records)}"
+            if records
+            else "no requests at all",
         )
 
     def check_screens(self) -> None:
@@ -1137,12 +1191,22 @@ def first_setup(j: Journey) -> None:
         f"{last.get('consumption_rows')} usage and {last.get('cost_rows')} cost "
         f"rows (expected {len(issued)}, {days}, {len(COSTS) * days})",
     )
-    operations = j.operations(started)
-    signed_in = operations.index("token") if "token" in operations else len(operations)
+    # The setup signs in before Home Assistant creates the entry, and the
+    # entry's first update starts after it.
+    created = j.created(entry_id)
+    in_setup = j.operations(started, created)
     j.check(
-        "one sign-in, in the setup; the entry then resumed with its refresh token",
-        operations.count("authorize") == 1 and "refresh" in operations[signed_in:],
-        ", ".join(operations),
+        "the setup signed in once and read the account",
+        in_setup == SIGN_IN,
+        ", ".join(in_setup) or "no requests",
+    )
+    first_update = j.operations(created)
+    j.check(
+        "the entry's first update used the refresh token, with no sign-in",
+        first_update[:1] == ["refresh"]
+        and "authorize" not in first_update
+        and "billing_periods" in first_update,
+        ", ".join(first_update) or "no requests",
     )
     j.check_entry(entry_id, [Import(issued)])
 
@@ -1273,11 +1337,17 @@ def reauth(j: Journey) -> None:
     )
     issued = j.issued()
     j.wait_imported(entry_id, issued[-1].days)
+    # The flow signs in; then the reloaded entry's update starts.
     operations = j.operations(signed_in)
+    after_sign_in = operations[len(SIGN_IN) :]
     j.check(
-        "the reloaded entry resumed with the new sign-in's refresh token",
-        operations.count("authorize") == 1 and "refresh" in operations,
-        ", ".join(operations),
+        "the new password signed in once; the reloaded entry then used the "
+        "new refresh token, with no sign-in",
+        operations[: len(SIGN_IN)] == SIGN_IN
+        and after_sign_in[:1] == ["refresh"]
+        and "authorize" not in after_sign_in
+        and "billing_periods" in after_sign_in,
+        ", ".join(operations) or "no requests",
     )
     after = j.check_entry(entry_id, [first, Import(issued)])
     j.check_unchanged("the reauthentication", before, after)
@@ -1306,11 +1376,14 @@ def reconfigure(j: Journey) -> None:
     refused = j.submit(
         str(other["flow_id"]), {"username": OTHER_ACCOUNT_EMAIL, "password": PASSWORD}
     )
-    reached = [r.get("account") for r in j.journal(began) if r.get("account")]
+    reached = {str(r["account"]) for r in j.journal(began) if r.get("account")}
     j.check(
         "another account's login is refused",
-        refused.get("type") == "abort" and refused.get("reason") == "wrong_account",
-        f"{refused.get('reason')}; the login reached {', '.join(map(str, reached))}",
+        refused.get("type") == "abort"
+        and refused.get("reason") == "wrong_account"
+        and reached == {SECOND_ACCOUNT_NUMBER},
+        f"{refused.get('reason')}; the login reached "
+        f"{', '.join(sorted(reached)) or 'no account'}",
     )
     j.scenario(j.watercare(logins=logins, withheld=0))
     renamed = j.start_flow({"entry_id": entry_id})
@@ -1360,7 +1433,11 @@ def options(j: Journey) -> None:
             and all(suggested(form, name) is None for name in NEW_PRICES.as_options()),
             str(step),
         )
-    j.require("the options form", step in {"init", "new_year"}, str(step))
+    j.require(
+        "the options open on the init or new_year step",
+        step in {"init", "new_year"},
+        str(step),
+    )
     # The newest bill arrives after the change: its days take the new prices.
     j.scenario(j.watercare(withheld=0))
     saved = j.submit_options(
@@ -1390,8 +1467,10 @@ def options(j: Journey) -> None:
         None if prices is None else bill_cost(newest, prices, NEW_RATIO)["total_cost"]
     )
     j.check(
-        "the days recorded after the change are priced with the new options",
+        "the new bill's days, recorded after the change, cost the bill at the "
+        "new options",
         want is not None
+        and len(new_days) == newest.days
         and abs(sum(row.state for row in new_days) - float(want)) <= TOLERANCE,
         f"{len(new_days)} days, {sum(row.state for row in new_days):.2f} NZD "
         f"(expected {'none' if want is None else f'{want:.2f}'}); "
@@ -1414,12 +1493,22 @@ def restart(j: Journey, relaunch: Callable[[], None]) -> None:
         else:
             relaunch()
         issued = j.issued()
-        j.wait_imported(entry_id, issued[-1].days)
+        newest = issued[-1].days
+        coordinator = j.wait_imported(entry_id, newest)
+        last = coordinator.get("last_import") or {}
+        j.check(
+            f"after {when}, the update added only the new bill's days",
+            last.get("consumption_rows") == newest
+            and last.get("cost_rows") == len(COSTS) * newest
+            and not last.get("rebuilt"),
+            f"{last.get('consumption_rows')} usage and {last.get('cost_rows')} "
+            f"cost rows (expected {newest} and {len(COSTS) * newest})",
+        )
         operations = j.operations(began)
         j.check(
             f"after {when}, the entry resumed with its refresh token, no sign-in",
-            "refresh" in operations and "authorize" not in operations,
-            ", ".join(operations),
+            operations[:1] == ["refresh"] and "authorize" not in operations,
+            ", ".join(operations) or "no requests",
         )
         imports.append(Import(issued))
         after = j.check_entry(entry_id, imports)
@@ -1502,12 +1591,16 @@ class Run:
                 restart(journey, relaunch)
             else:
                 globals()[name](journey)
-        except (JourneyError, OSError, KeyError, ValueError) as err:
+        except Exception as err:  # noqa: BLE001
+            # Any failure fails this journey; the next one still runs.
             result.error = f"{type(err).__name__}: {err}"
             say(f"  FAIL  stopped: {result.error}")
-        except SystemExit as err:
-            # Home Assistant failed to start again: the run cannot go on.
-            result.error = f"the run stopped: {err}"
+        except BaseException as err:
+            # Home Assistant failed to start again, or the run was interrupted:
+            # the run cannot go on.
+            result.error = f"the run stopped: {type(err).__name__}" + (
+                f": {err}" if str(err) else ""
+            )
             say(f"  FAIL  {result.error}")
             raise
         finally:
@@ -1520,11 +1613,13 @@ class Run:
         return result
 
 
-def write_report(results: Sequence[JourneyResult], header: dict[str, str]) -> Path:
+def write_report(
+    results: Sequence[JourneyResult], header: dict[str, str], wanted: int
+) -> Path:
     """Write the report to the system's temporary directory; return its path."""
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     path = Path(tempfile.gettempdir()) / f"watercare-journeys-{stamp}.md"
-    path.write_text(markdown(results, header))
+    path.write_text(markdown(results, header, wanted))
     return path
 
 
@@ -1565,13 +1660,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     if domain != DOMAIN:
         fail(f"These journeys are for {DOMAIN}, not {domain}")
     names = [name for name in JOURNEYS if not args.only or name in args.only]
-    folder = live_ha.config_dir(live_ha.state_dir(domain, NAME)) / STANDIN_FOLDER
+    state = live_ha.state_dir(domain, NAME)
+    if state.exists():
+        # It may be another run's: deleting it would end that run.
+        fail(
+            f"{state} exists: another run may be using it. "
+            "If none is, delete it with --clean-up"
+        )
+    folder = live_ha.config_dir(state) / STANDIN_FOLDER
     began = time.monotonic()
     header = {
         "Started": datetime.now(UTC).isoformat(timespec="seconds"),
         "Integration": args.ref or "the working tree",
     }
     results: list[JourneyResult] = []
+    # Everything the stand-in refused in the run, up to Home Assistant's
+    # shutdown: the journeys check it only up to their own last checks.
+    refused: list[str] = []
+
+    def read_at_the_end(state: Path) -> None:
+        refused.extend(read_refused(live_ha.config_dir(state) / STANDIN_FOLDER))
+
     try:
         instance = live_ha.launch(
             args.ref,
@@ -1589,13 +1698,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         for name in names:
             run.run(name)
     finally:
-        live_ha.stop(NAME)
+        live_ha.stop(NAME, before_delete=read_at_the_end)
         header["Duration"] = f"{time.monotonic() - began:.0f} s"
         if results:
-            report = write_report(results, header)
-            passed = sum(result.ok for result in results)
-            say(f"{passed} of {len(results)} journeys passed; report: {report}")
-    return 0 if results and all(result.ok for result in results) else 1
+            header["Refused by the stand-in"] = (
+                f"{len(refused)}: {'; '.join(refused[:3])}" if refused else "nothing"
+            )
+            if refused:
+                say(f"FAIL the stand-in refused {len(refused)}: {refused[0]}")
+            report = write_report(results, header, len(names))
+            say(f"{summary(results, len(names))}; report: {report}")
+    ran_all = len(results) == len(names) and all(result.ok for result in results)
+    return 0 if ran_all and not refused else 1
 
 
 if __name__ == "__main__":

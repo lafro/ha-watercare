@@ -176,8 +176,11 @@ def test_a_whole_history_has_no_problems() -> None:
     expected = journeys.expected_statistics([Import(tuple(bills(_TODAY)))])
     for kind in journeys.STATISTICS:
         assert journeys.history_problems(kind, _rows(kind, expected), expected) == []
+    # A history with no days proves nothing.
     nothing = journeys.expected_statistics([])
-    assert journeys.history_problems("consumption", [], nothing) == []
+    assert journeys.history_problems("consumption", [], nothing) == [
+        "no days expected; 0 rows found"
+    ]
 
 
 def test_every_kind_of_damage_is_found() -> None:
@@ -223,6 +226,8 @@ def test_changed_rows_names_lost_and_changed_days() -> None:
     assert len(changed) == 2
     assert "now 9.0/9.0" in changed[0]
     assert changed[1].endswith("is gone")
+    # Nothing before proves nothing.
+    assert journeys.changed_rows([], before) == ["no days to compare"]
 
 
 # -------------------------------------------------------------------- screens
@@ -351,6 +356,51 @@ def test_abort_entry_and_other_screens_are_rendered() -> None:
     assert (other.kind, other.step) == ("external", "x")
 
 
+def test_a_screen_with_an_unfilled_placeholder_lacks_its_words() -> None:
+    screen = journeys.render(
+        {
+            "type": "form",
+            "handler": "watercare",
+            "step_id": "reauth_confirm",
+            "description_placeholders": {},
+            "data_schema": [],
+        },
+        _TRANSLATIONS,
+    )
+    assert screen.text == "Watercare no longer accepts the password for {username}."
+    assert screen.missing == (
+        "step.reauth_confirm.description (no value for {username})",
+    )
+
+
+def test_field_labels_come_from_the_handlers_words() -> None:
+    screen = journeys.render(
+        {
+            "type": "form",
+            "handler": "watercare",
+            "translation_domain": "homeassistant",
+            "step_id": "user",
+            "errors": {"base": "invalid_auth"},
+            "data_schema": [{"name": "username"}],
+        },
+        _TRANSLATIONS,
+    )
+    assert screen.fields == ("Email",)
+    assert screen.missing == ("step.user.title", "error.invalid_auth")
+    options = journeys.render(
+        {
+            "type": "form",
+            "handler": "an-entry-id",
+            "translation_domain": "homeassistant",
+            "step_id": "init",
+            "data_schema": [{"name": "wastewater_ratio"}],
+        },
+        _TRANSLATIONS,
+        "options",
+    )
+    assert options.fields == ("Wastewater ratio",)
+
+
 def test_suggested_values_and_errors_are_read_from_a_form() -> None:
     result = {
         "errors": {"base": "cannot_connect"},
@@ -411,10 +461,18 @@ def test_the_report_goes_to_the_temporary_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
-    path = journeys.write_report([], {"Started": "now"})
+    path = journeys.write_report([], {"Started": "now"}, 7)
     assert path.parent == tmp_path
     assert path.name.startswith("watercare-journeys-")
     assert "- Started: now" in path.read_text()
+    assert "- Result: 0 of 7 journeys passed" in path.read_text()
+
+
+def test_a_journey_that_never_ran_did_not_pass() -> None:
+    passed = JourneyResult("a", "A", [journeys.Check("c", ok=True)])
+    assert journeys.summary([passed], 1) == "1 of 1 journeys passed"
+    assert journeys.summary([passed], 7) == "1 of 7 journeys passed"
+    assert journeys.summary([passed, passed], 0) == "2 of 2 journeys passed"
 
 
 # ------------------------------------------------------------------- journey
@@ -459,6 +517,17 @@ class _Client:
         ]
 
 
+def _stop(stopped: list[str], state: Path) -> Any:
+    """Return a fake ``live_ha.stop`` that records the name it was given."""
+
+    def stop(name: str = "live-ha", before_delete: Any = None) -> None:
+        stopped.append(name)
+        if before_delete is not None:
+            before_delete(state)
+
+    return stop
+
+
 def _journey(folder: Path, client: Any = None) -> Journey:
     chosen: Any = client or _Client()
     return Journey(chosen, folder, JourneyResult("x", "X"), _TODAY)
@@ -497,22 +566,46 @@ def test_the_scenario_and_journal_are_the_stand_ins(tmp_path: Path) -> None:
     assert standin.scenario() == scenario
     assert not list(tmp_path.glob("*.partial"))
     assert journey.issued() == tuple(bills(_TODAY)[:-2])
-    standin.journal({"at": "2026-10-28T12:00:00.000000+00:00", "operation": "a"})
-    standin.journal({"at": "2026-10-28T12:00:05.700000+00:00", "operation": "b"})
-    assert [r["operation"] for r in journey.journal()] == ["a", "b"]
-    since = datetime(2026, 10, 28, 12, 0, 5, 600000, tzinfo=UTC)
-    assert journey.operations(since) == ["b"]
+    standin.journal({"at": "2026-10-28T12:00:00.250000+00:00", "operation": "a"})
+    standin.journal({"at": "2026-10-28T12:00:00.750000+00:00", "operation": "b"})
+    standin.journal({"at": "2026-10-28T12:00:01.250000+00:00", "operation": "c"})
+    assert [r["operation"] for r in journey.journal()] == ["a", "b", "c"]
+    # To the microsecond: two requests in the same second are told apart.
+    since = datetime(2026, 10, 28, 12, 0, 0, 500000, tzinfo=UTC)
+    assert journey.operations(since) == ["b", "c"]
+    until = datetime(2026, 10, 28, 12, 0, 1, 250000, tzinfo=UTC)
+    assert journey.operations(since, until) == ["b"]
+
+
+def test_the_entrys_creation_time_is_home_assistants(tmp_path: Path) -> None:
+    path = "/api/config/config_entries/entry?domain=watercare"
+    at = datetime(2026, 10, 28, 4, 10, 15, 123456, tzinfo=UTC)
+    journey = _journey(
+        tmp_path,
+        _Client({path: [{"entry_id": "E1", "created_at": at.timestamp()}]}),
+    )
+    assert journey.created("E1") == at
+    with pytest.raises(JourneyError, match="E2 is gone"):
+        journey.created("E2")
 
 
 def test_refused_requests_and_fake_errors_fail_the_check(tmp_path: Path) -> None:
     journey = _journey(tmp_path)
     journey.check_nothing_refused()
-    assert all(check.ok for check in journey.result.checks)
+    # No request at all proves nothing.
+    assert [(c.ok, c.detail) for c in journey.result.checks] == [
+        (True, ""),
+        (False, "no requests at all"),
+    ]
     standin = watercare_standin.StandIn(tmp_path)
+    standin.journal({"at": "2026-10-28T12:00:00+00:00", "operation": "account"})
+    journey.check_nothing_refused()
+    assert journey.result.checks[-1].ok
+    assert journey.result.checks[-1].detail == "answered: 1"
     standin.refuse("request", "updates.example.invalid")
     standin.journal({"at": "2026-10-28T12:00:00+00:00", "error": "unexpected request"})
     journey.check_nothing_refused()
-    refused, errors = journey.result.checks[2:]
+    refused, errors = journey.result.checks[4:]
     assert not refused.ok
     assert "request updates.example.invalid" in refused.detail
     assert not errors.ok
@@ -774,6 +867,48 @@ def test_a_journey_starts_without_statistics_and_is_cleaned_up_if_it_stops(
     assert run.results == [result]
 
 
+def test_a_journey_that_crashes_fails_and_the_next_one_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def crashes(journey: Journey) -> None:
+        journey.check("got this far", ok=True)
+        raise IndexError("list index out of range")
+
+    monkeypatch.setattr(journeys, "first_setup", crashes)
+    monkeypatch.setattr(journeys, "wrong_password", lambda j: j.check("ok", ok=True))
+    monkeypatch.setattr(Journey, "clear_statistics", lambda _self: None)
+    monkeypatch.setattr(Journey, "remove_entries", lambda _self: None)
+    run = journeys.Run(live_ha.Instance(tmp_path, 8126, None, "1"), tmp_path, _TODAY)  # type: ignore[arg-type]
+    crashed = run.run("first_setup")
+    assert not crashed.ok
+    assert crashed.error == "IndexError: list index out of range"
+    assert run.run("wrong_password").ok
+    assert journeys.summary(run.results, 2) == "1 of 2 journeys passed"
+
+
+def test_an_interrupted_journey_fails_and_stops_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    removed: list[bool] = []
+
+    def interrupted(journey: Journey) -> None:
+        journey.check("got this far", ok=True)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(journeys, "first_setup", interrupted)
+    monkeypatch.setattr(Journey, "clear_statistics", lambda _self: None)
+    monkeypatch.setattr(Journey, "remove_entries", lambda _self: removed.append(True))
+    run = journeys.Run(live_ha.Instance(tmp_path, 8126, None, "1"), tmp_path, _TODAY)  # type: ignore[arg-type]
+    with pytest.raises(KeyboardInterrupt):
+        run.run("first_setup")
+    (result,) = run.results
+    assert not result.ok
+    assert result.error == "the run stopped: KeyboardInterrupt"
+    assert removed == [True]
+    # Journeys that never ran did not pass.
+    assert journeys.summary(run.results, 7) == "0 of 7 journeys passed"
+
+
 def test_a_failed_restart_stops_the_run_but_keeps_its_report(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -797,7 +932,8 @@ def test_a_failed_restart_stops_the_run_but_keeps_its_report(
     stopped: list[str] = []
     monkeypatch.setattr(live_ha, "launch", launch)
     monkeypatch.setattr(live_ha, "relaunch", relaunch)
-    monkeypatch.setattr(live_ha, "stop", lambda name="live-ha": stopped.append(name))
+    monkeypatch.setattr(live_ha, "state_dir", lambda *_args: tmp_path / "state")
+    monkeypatch.setattr(live_ha, "stop", _stop(stopped, tmp_path / "state"))
     monkeypatch.setattr(live_ha, "config_dir", lambda _state: tmp_path / "config")
     monkeypatch.setattr(journeys, "restart", restart)
     monkeypatch.setattr(Journey, "clear_statistics", lambda _self: None)
@@ -807,15 +943,20 @@ def test_a_failed_restart_stops_the_run_but_keeps_its_report(
         journeys.main(["--only", "restart"])
     assert stopped == ["journeys"]
     out = capsys.readouterr().out
-    assert "FAIL  the run stopped: Timed out waiting for the web server" in out
+    assert (
+        "FAIL  the run stopped: SystemExit: Timed out waiting for the web server" in out
+    )
     assert "0 of 1 journeys passed" in out
     (report,) = tmp_path.glob("watercare-journeys-*.md")
-    assert "Stopped: the run stopped: Timed out" in report.read_text()
+    assert "Stopped: the run stopped: SystemExit: Timed out" in report.read_text()
 
 
-def test_the_instance_is_always_deleted(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_instance_is_always_deleted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     stopped: list[str] = []
-    monkeypatch.setattr(live_ha, "stop", lambda name="live-ha": stopped.append(name))
+    monkeypatch.setattr(live_ha, "state_dir", lambda *_args: tmp_path / "state")
+    monkeypatch.setattr(live_ha, "stop", _stop(stopped, tmp_path / "state"))
 
     def broken(*_args: Any, **_kwargs: Any) -> live_ha.Instance:
         raise SystemExit("install failed")
@@ -826,6 +967,22 @@ def test_the_instance_is_always_deleted(monkeypatch: pytest.MonkeyPatch) -> None
     assert stopped == ["journeys"]
     assert journeys.main(["--clean-up"]) == 0
     assert stopped == ["journeys", "journeys"]
+
+
+def test_a_run_never_takes_over_an_existing_instance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stopped: list[str] = []
+    launched: list[bool] = []
+    (tmp_path / "state").mkdir()
+    monkeypatch.setattr(live_ha, "state_dir", lambda *_args: tmp_path / "state")
+    monkeypatch.setattr(live_ha, "stop", _stop(stopped, tmp_path / "state"))
+    monkeypatch.setattr(live_ha, "launch", lambda *_a, **_k: launched.append(True))
+    with pytest.raises(SystemExit, match="another run may be using it"):
+        journeys.main([])
+    assert stopped == []
+    assert launched == []
+    assert (tmp_path / "state").is_dir()
 
 
 def test_a_run_reports_and_exits_non_zero_when_a_journey_fails(
@@ -850,7 +1007,8 @@ def test_a_run_reports_and_exits_non_zero_when_a_journey_fails(
 
     stopped: list[str] = []
     monkeypatch.setattr(live_ha, "launch", launch)
-    monkeypatch.setattr(live_ha, "stop", lambda name="live-ha": stopped.append(name))
+    monkeypatch.setattr(live_ha, "state_dir", lambda *_args: tmp_path / "state")
+    monkeypatch.setattr(live_ha, "stop", _stop(stopped, tmp_path / "state"))
     monkeypatch.setattr(live_ha, "config_dir", lambda _state: tmp_path / "config")
     monkeypatch.setattr(journeys.Run, "run", run)
     monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
@@ -865,6 +1023,76 @@ def test_a_run_reports_and_exits_non_zero_when_a_journey_fails(
     assert stopped == ["journeys", "journeys"]
     (report,) = sorted(tmp_path.glob("watercare-journeys-*.md"))[-1:]
     assert "Home Assistant: 2026.10.4" in report.read_text()
+    assert "Refused by the stand-in: nothing" in report.read_text()
+
+
+def test_a_run_whose_journeys_did_not_all_run_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class _Process:
+        pid = 4242
+
+    folder = tmp_path / "config" / journeys.STANDIN_FOLDER
+
+    def launch(*_args: Any, **_kwargs: Any) -> live_ha.Instance:
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "installed-4242").write_text("")
+        return live_ha.Instance(tmp_path, 8126, _Process(), "2026.10.4")  # type: ignore[arg-type]
+
+    def run(self: journeys.Run, name: str) -> JourneyResult:
+        if name == "reauth":
+            # Recorded nothing, as if the runner skipped it.
+            return JourneyResult(name, name)
+        result = JourneyResult(name, name, [journeys.Check("c", ok=True)])
+        self.results.append(result)
+        return result
+
+    monkeypatch.setattr(live_ha, "launch", launch)
+    monkeypatch.setattr(live_ha, "state_dir", lambda *_args: tmp_path / "state")
+    monkeypatch.setattr(live_ha, "stop", _stop([], tmp_path / "state"))
+    monkeypatch.setattr(live_ha, "config_dir", lambda _state: tmp_path / "config")
+    monkeypatch.setattr(journeys.Run, "run", run)
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+    assert journeys.main(["--only", "first_setup", "reauth"]) == 1
+    assert "1 of 2 journeys passed" in capsys.readouterr().out
+
+
+def test_a_refusal_after_the_last_check_fails_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class _Process:
+        pid = 4242
+
+    folder = tmp_path / "config" / journeys.STANDIN_FOLDER
+
+    def launch(*_args: Any, **_kwargs: Any) -> live_ha.Instance:
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "installed-4242").write_text("")
+        return live_ha.Instance(tmp_path, 8126, _Process(), "2026.10.4")  # type: ignore[arg-type]
+
+    def run(self: journeys.Run, name: str) -> JourneyResult:
+        result = JourneyResult(name, name, [journeys.Check("c", ok=True)])
+        self.results.append(result)
+        return result
+
+    def stop(name: str = "live-ha", before_delete: Any = None) -> None:
+        del name
+        # Home Assistant tried to reach the internet as it shut down.
+        (folder / watercare_standin.REFUSED).write_text("t connection 192.0.2.1\n")
+        before_delete(tmp_path / "state")
+
+    monkeypatch.setattr(live_ha, "launch", launch)
+    monkeypatch.setattr(live_ha, "state_dir", lambda *_args: tmp_path / "state")
+    monkeypatch.setattr(live_ha, "stop", stop)
+    monkeypatch.setattr(live_ha, "config_dir", lambda _state: tmp_path / "config")
+    monkeypatch.setattr(journeys.Run, "run", run)
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+    assert journeys.main(["--only", "first_setup"]) == 1
+    out = capsys.readouterr().out
+    assert "FAIL the stand-in refused 1: t connection 192.0.2.1" in out
+    assert "1 of 1 journeys passed" in out
+    (report,) = tmp_path.glob("watercare-journeys-*.md")
+    assert "Refused by the stand-in: 1: t connection 192.0.2.1" in report.read_text()
 
 
 def test_the_journeys_refuse_another_integration(
