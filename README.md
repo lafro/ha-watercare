@@ -178,7 +178,7 @@ automation:
 - Mechanical meters only. Smart-meter data uses different endpoints whose formats have not been verified; support needs a real sample first. If Watercare reports a smart meter, or that the meter was replaced with one, a repair notice, **Watercare smart meters are not supported yet**, says so. Bills from the old meter still load, but no new ones appear, and Watercare fails to set up if it has no bills from an old meter. The notice goes away by itself once Watercare reports a manually read meter.
 - Daily values are an even split of each bill, not measured daily use. A mechanical meter is read about monthly in whole kilolitres.
 - Costs are calculated from published residential prices. Watercare's account history does list the amount of each bill and payment, but the integration does not read it yet. Infrastructure growth charges, trade waste, late fees and credits are not included. Business accounts use different prices and are not supported.
-- A bill that spans 1 July is charged at the prices of the year it starts in. This matches the one such bill checked so far to the cent (a split by day would have been about 3.7% too high); if one of your bills shows otherwise, please open an issue.
+- A bill that spans 1 July is charged at the prices of the year it starts in. This matched every such bill checked so far to the cent (a split by day was about 3.7% too high on the first one); if one of your bills shows otherwise, please open an issue.
 - History before 1 July 2018 is priced at the 2018/19 prices, the earliest year in the table.
 
 ## Troubleshooting

@@ -11,9 +11,11 @@ The 1.5.0 model (docs/statistics.md has the reasoning):
 * **Costs at the tariff in force.** Watercare prices a whole bill at the
   prices in force when its billing period starts, so every day of a bill is
   priced with the financial-year tariff (tariffs.py) of the bill's start
-  date, and a bill that spans 1 July keeps the earlier year's prices. Cost
-  rows stop at the first day whose bill has no known tariff and resume once
-  one is available, so a missing price never becomes a wrong one.
+  date, and a bill that spans 1 July keeps the earlier year's prices. Each
+  bill is priced as a whole, with Watercare's rounding, and its three charge
+  lines are then spread evenly over its days. Cost rows stop at the first
+  day whose bill has no known tariff and resume once one is available, so a
+  missing price never becomes a wrong one.
 * **One-off rebuild.** Entries upgraded from 1.4.x hold one row per bill,
   priced at a single flat tariff. ``async_rebuild`` clears the four
   statistics and imports the full history in the new format, once.
@@ -33,9 +35,8 @@ import threading
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
-from decimal import Decimal
-from itertools import pairwise
-from typing import Final, Literal, Protocol
+from decimal import ROUND_HALF_EVEN, Decimal
+from typing import Final, Literal
 
 from homeassistant.components.recorder import get_instance  # type: ignore[attr-defined]
 from homeassistant.components.recorder.models import (
@@ -63,9 +64,9 @@ from .const import (
 )
 from .models import BillingPeriod
 from .tariffs import (
-    DAYS_PER_YEAR,
     Tariff,
     TariffSchedule,
+    days_in_financial_year,
     financial_year,
     financial_year_label,
 )
@@ -75,6 +76,9 @@ _LOGGER = logging.getLogger(__name__)
 _LITRES_PER_KILOLITRE: Final = Decimal(1000)
 _ONE_DAY: Final = timedelta(days=1)
 _PRECISION: Final = Decimal("0.000000001")
+_CENT: Final = Decimal("0.01")
+# Watercare charges wastewater on a volume rounded to this, in kilolitres.
+_WASTEWATER_VOLUME_STEP: Final = Decimal("0.01")
 # Litres. Stored sums are floats; anything above this is a real difference.
 _VOLUME_TOLERANCE: Final = Decimal("0.5")
 
@@ -119,12 +123,21 @@ class BillShare:
 
     day: date
     litres: Decimal
-    fixed_charge_days: Decimal
-    """Billing days this share stands for (1 unless Watercare's day count
-    and the spread length differ)."""
-    bill: BillKey
-    priced_on: date
-    """The date whose tariff prices this share (see ``pricing_date``)."""
+    period: BillingPeriod
+    part: int
+    """This share's place among the days the bill is spread over, from 0."""
+    parts: int
+    """How many days the bill is spread over."""
+
+    @property
+    def bill(self) -> BillKey:
+        """Return the key of the bill this share belongs to."""
+        return bill_key(self.period)
+
+    @property
+    def priced_on(self) -> date:
+        """Return the date whose tariff prices this share (``pricing_date``)."""
+        return pricing_date(self.period)
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,10 +225,14 @@ def split_evenly(total: Decimal, parts: int) -> list[Decimal]:
     precision, so rounding never accumulates: a bill's rows sum to the bill,
     and sums across bills stay exact.
     """
-    shares = [
-        (total * index / parts).quantize(_PRECISION) for index in range(parts + 1)
-    ]
-    return [later - earlier for earlier, later in pairwise(shares)]
+    return [_even_part(total, part, parts) for part in range(parts)]
+
+
+def _even_part(total: Decimal, part: int, parts: int) -> Decimal:
+    """Return one part of ``split_evenly(total, parts)``, counting from 0."""
+    return (total * (part + 1) / parts).quantize(_PRECISION) - (
+        total * part / parts
+    ).quantize(_PRECISION)
 
 
 def bill_shares(
@@ -223,19 +240,15 @@ def bill_shares(
 ) -> list[BillShare]:
     """Spread every bill evenly over its days, oldest bill first.
 
-    The litres of a bill's shares add up to the bill, and its fixed-charge
-    days to Watercare's day count for it.
+    The litres of a bill's shares add up to the bill.
     """
     shares: list[BillShare] = []
     for period, days in spread_period_days(periods, after=after):
         usage_shares = split_evenly(Decimal(period.usage_litres), len(days))
-        fixed_shares = split_evenly(Decimal(period.number_of_days), len(days))
-        key = bill_key(period)
-        priced_on = pricing_date(period)
         shares.extend(
-            BillShare(day, usage_share, fixed_share, key, priced_on)
-            for day, usage_share, fixed_share in zip(
-                days, usage_shares, fixed_shares, strict=True
+            BillShare(day, usage_share, period, part, len(days))
+            for part, (day, usage_share) in enumerate(
+                zip(days, usage_shares, strict=True)
             )
         )
     return shares
@@ -254,23 +267,50 @@ def daily_usage(
     return [DailyUsage(day, tuple(by_day[day])) for day in sorted(by_day)]
 
 
-class _Priceable(Protocol):
-    @property
-    def litres(self) -> Decimal: ...
+BillCost = DailyCost
+"""Cost of one bill: its three charge lines, each rounded to the cent."""
 
-    @property
-    def fixed_charge_days(self) -> Decimal: ...
+
+def _to_cent(amount: Decimal) -> Decimal:
+    return amount.quantize(_CENT, ROUND_HALF_EVEN)
+
+
+def price_bill(
+    period: BillingPeriod, tariff: Tariff, wastewater_ratio: Decimal
+) -> BillCost:
+    """Price a whole bill as Watercare's invoice does (docs/tariffs.md).
+
+    Each charge line is rounded to the cent, and the bill is their sum. The
+    wastewater line charges the volume rounded to 0.01 kL, half to even.
+    The fixed charge is the yearly charge over the days of the financial
+    year whose prices apply (366 when it contains 29 February), times
+    Watercare's day count for the bill, which includes both of its dates.
+    """
+    kilolitres = Decimal(period.usage_litres) / _LITRES_PER_KILOLITRE
+    wastewater_kilolitres = (kilolitres * wastewater_ratio).quantize(
+        _WASTEWATER_VOLUME_STEP, ROUND_HALF_EVEN
+    )
+    year_days = days_in_financial_year(financial_year(pricing_date(period)))
+    return BillCost(
+        water=_to_cent(kilolitres * tariff.water_rate),
+        wastewater=_to_cent(wastewater_kilolitres * tariff.wastewater_rate),
+        fixed=_to_cent(tariff.fixed_charge / year_days * period.number_of_days),
+    )
 
 
 def daily_cost(
-    usage: _Priceable, tariff: Tariff, wastewater_ratio: Decimal
+    share: BillShare, tariff: Tariff, wastewater_ratio: Decimal
 ) -> DailyCost:
-    """Price litres and fixed-charge days with one tariff."""
-    kilolitres = usage.litres / _LITRES_PER_KILOLITRE
+    """Return one share of its bill's cost, priced with one tariff.
+
+    Each charge line of the bill is split evenly over the bill's days, so a
+    bill's shares add up to the bill exactly.
+    """
+    bill = price_bill(share.period, tariff, wastewater_ratio)
     return DailyCost(
-        water=kilolitres * tariff.water_rate,
-        wastewater=kilolitres * wastewater_ratio * tariff.wastewater_rate,
-        fixed=tariff.fixed_charge / DAYS_PER_YEAR * usage.fixed_charge_days,
+        water=_even_part(bill.water, share.part, share.parts),
+        wastewater=_even_part(bill.wastewater, share.part, share.parts),
+        fixed=_even_part(bill.fixed, share.part, share.parts),
     )
 
 
@@ -300,29 +340,18 @@ def day_cost(
     return cost
 
 
-BillCost = DailyCost
-"""Cost of one bill: the sum of its days."""
-
-
 def bill_cost(
-    period: BillingPeriod,
-    periods: Sequence[BillingPeriod],
-    schedule: TariffSchedule,
-    wastewater_ratio: Decimal,
+    period: BillingPeriod, schedule: TariffSchedule, wastewater_ratio: Decimal
 ) -> BillCost | None:
     """Return the cost of one bill, or None if its tariff is unknown.
 
-    Uses the same shares as the statistics, so the sensor and the Energy
-    dashboard always agree.
+    The statistics spread this same cost over the bill's days, so the sensor
+    and the Energy dashboard always agree.
     """
-    key = bill_key(period)
     tariff = schedule.for_day(pricing_date(period))
-    shares = [share for share in bill_shares(periods) if share.bill == key]
-    if tariff is None or not shares:
+    if tariff is None:
         return None
-    return sum(
-        (daily_cost(share, tariff, wastewater_ratio) for share in shares), _NO_COST
-    )
+    return price_bill(period, tariff, wastewater_ratio)
 
 
 def day_start(day: date) -> datetime:
