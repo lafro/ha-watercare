@@ -57,7 +57,7 @@ import urllib.error
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from datetime import time as day_time
-from decimal import Decimal
+from decimal import ROUND_HALF_EVEN, Decimal
 from itertools import pairwise
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn
@@ -98,7 +98,9 @@ STATISTICS = {
 COSTS = ("total_cost", "water_cost", "wastewater_cost")
 DEFAULT_RATIO = Decimal("0.785")
 KILOLITRE = Decimal(1000)
-DAYS_PER_YEAR = Decimal(365)
+# Watercare rounds each charge to the cent, and the wastewater volume to
+# 0.01 kL, both half to even (docs/tariffs.md).
+HUNDREDTH = Decimal("0.01")
 JULY = 7
 # The synthetic logins the journeys sign in with.
 EMAIL = "journey@example.com"
@@ -200,12 +202,23 @@ class Pricing:
         return table[min(table)] if year < min(table) else None
 
 
+def year_days(year: int) -> int:
+    """Return the days in a financial year: 366 when it has a 29 February."""
+    return (date(year + 1, JULY, 1) - date(year, JULY, 1)).days
+
+
+def hundredths(amount: Decimal) -> Decimal:
+    """Return an amount rounded to two decimals, half to even."""
+    return amount.quantize(HUNDREDTH, ROUND_HALF_EVEN)
+
+
 def bill_cost(bill: Bill, prices: Prices, ratio: Decimal) -> dict[str, Decimal]:
     """Return a whole bill's costs, by kind, as docs/tariffs.md prices it."""
     kilolitres = Decimal(bill.litres) / KILOLITRE
-    water = kilolitres * prices.water
-    wastewater = kilolitres * ratio * prices.wastewater
-    fixed = prices.fixed / DAYS_PER_YEAR * bill.days
+    water = hundredths(kilolitres * prices.water)
+    wastewater = hundredths(hundredths(kilolitres * ratio) * prices.wastewater)
+    days = year_days(financial_year(bill.start))
+    fixed = hundredths(prices.fixed / days * bill.days)
     return {
         "water_cost": water,
         "wastewater_cost": wastewater,
