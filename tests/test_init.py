@@ -40,12 +40,13 @@ from custom_components.watercare.const import (
     STAT_TOTAL_COST,
     STAT_WASTEWATER_COST,
 )
-from custom_components.watercare.models import parse_billing_periods
+from custom_components.watercare.models import AccountSummary, parse_billing_periods
 from custom_components.watercare.statistics import bill_cost, day_start
 from custom_components.watercare.tariffs import PUBLISHED_TARIFFS, TariffSchedule
 
 from .common import (
     ACCOUNT_NUMBER,
+    ACCOUNT_PAYLOAD,
     EMAIL,
     PASSWORD,
     add_legacy_statistics,
@@ -400,20 +401,99 @@ async def test_tariff_issue_names_the_earliest_unpriced_year(
     assert entry.runtime_data.missing_tariff_year == 2027
 
 
+def _use_account(mock_api: dict[str, AsyncMock], **changes: Any) -> None:
+    """Make the fake Watercare return the synthetic account with changes."""
+    account = AccountSummary.from_json([{**ACCOUNT_PAYLOAD[0], **changes}])
+    assert account is not None
+
+    async def _get_account(api: Any) -> AccountSummary:
+        api._account = account
+        return account
+
+    mock_api["account"].side_effect = _get_account
+
+
+SMART_METERS = [
+    pytest.param({"meterType": "smartmeter-single"}, id="smartmeter-single"),
+    pytest.param({"meterType": "smartmeter-other"}, id="smartmeter-other"),
+    pytest.param({"transitionedMeterFromMMToSM": True}, id="changed-to-smart"),
+]
+
+
+@pytest.mark.parametrize("changes", SMART_METERS)
+async def test_smart_meter_issue_is_raised_and_cleared(
+    ha: HomeAssistant, mock_api: dict[str, AsyncMock], changes: dict[str, Any]
+) -> None:
+    _use_account(mock_api, **changes)
+    entry = make_entry()
+    await _setup(ha, entry)
+
+    # The bills from before the change still load.
+    assert entry.state is ConfigEntryState.LOADED
+    issue_id = f"smart_meter_{entry.entry_id}"
+    issue = ir.async_get(ha).async_get_issue(DOMAIN, issue_id)
+    assert issue is not None
+    assert not issue.is_fixable
+    assert issue.severity is ir.IssueSeverity.WARNING
+    assert issue.translation_key == "smart_meter"
+
+    _use_account(mock_api, meterType="mechanical")
+    await _refresh(ha, entry.runtime_data)
+
+    assert ir.async_get(ha).async_get_issue(DOMAIN, issue_id) is None
+
+
+@pytest.mark.parametrize(
+    "periods",
+    [
+        pytest.param({"return_value": []}, id="no-bills"),
+        pytest.param(
+            {"side_effect": WatercareConnectionError("HTTP 404")}, id="bills-refused"
+        ),
+    ],
+)
+async def test_smart_meter_issue_without_bills(
+    ha: HomeAssistant, mock_api: dict[str, AsyncMock], periods: dict[str, Any]
+) -> None:
+    _use_account(mock_api, meterType="smartmeter-single")
+    for name, value in periods.items():
+        setattr(mock_api["periods"], name, value)
+    entry = make_entry()
+    await _setup(ha, entry)
+
+    assert entry.state is ConfigEntryState.SETUP_RETRY
+    issue_id = f"smart_meter_{entry.entry_id}"
+    assert ir.async_get(ha).async_get_issue(DOMAIN, issue_id) is not None
+
+
+async def test_no_smart_meter_issue_for_a_mechanical_meter(
+    ha: HomeAssistant, mock_api: dict[str, AsyncMock]
+) -> None:
+    entry = make_entry()
+    await _setup(ha, entry)
+
+    issue_id = f"smart_meter_{entry.entry_id}"
+    assert ir.async_get(ha).async_get_issue(DOMAIN, issue_id) is None
+
+
 async def test_removing_the_entry_removes_its_issues(
     ha: HomeAssistant,
     mock_api: dict[str, AsyncMock],
     freezer: FrozenDateTimeFactory,
 ) -> None:
     freezer.move_to("2027-07-02T12:00:00+12:00")
+    _use_account(mock_api, meterType="smartmeter-single")
     entry = make_entry()
     await _setup(ha, entry)
     issues = ir.async_get(ha)
-    assert issues.async_get_issue(DOMAIN, f"tariff_missing_{entry.entry_id}")
+    issue_ids = [
+        f"{issue}_{entry.entry_id}" for issue in ("tariff_missing", "smart_meter")
+    ]
+    assert all(issues.async_get_issue(DOMAIN, issue_id) for issue_id in issue_ids)
 
     await ha.config_entries.async_remove(entry.entry_id)
 
-    assert issues.async_get_issue(DOMAIN, f"tariff_missing_{entry.entry_id}") is None
+    assert not any(issues.async_get_issue(DOMAIN, issue_id) for issue_id in issue_ids)
 
 
 async def test_bill_spanning_1_july_keeps_its_cost_while_the_new_year_is_unknown(

@@ -26,6 +26,7 @@ from .const import (
     DEFAULT_WASTEWATER_RATIO,
     DOMAIN,
     ISSUE_REBUILD_SKIPPED,
+    ISSUE_SMART_METER,
     ISSUE_TARIFF_MISSING,
     LEGACY_ANNUAL_LINE_CHARGE,
     LEGACY_CONSUMPTION_RATE,
@@ -111,7 +112,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: WatercareConfigEntry) -
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Remove the entry's repair issues. Statistics are kept on purpose."""
-    for issue in (ISSUE_TARIFF_MISSING, ISSUE_REBUILD_SKIPPED):
+    for issue in (ISSUE_TARIFF_MISSING, ISSUE_REBUILD_SKIPPED, ISSUE_SMART_METER):
         ir.async_delete_issue(hass, DOMAIN, f"{issue}_{entry.entry_id}")
 
 

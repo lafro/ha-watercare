@@ -166,6 +166,10 @@
         }
       }
     },
+    "smart_meter": {
+      "title": "Watercare smart meters are not supported yet",
+      "description": "Watercare says this property has a smart water meter, or that its old meter was replaced with one. This version of the integration can only read the bills of manually read meters, so it cannot record a smart meter's water use yet. Until it can, no new bills appear in Home Assistant: if Watercare still has bills from the old meter, the Watercare sensors keep showing the last of them and the Energy dashboard's water use stops there; if it has none, Watercare shows as failing to set up and keeps retrying. Water use already recorded is kept. Smart-meter support needs real smart-meter data to test against first. This notice goes away by itself if Watercare reports a manually read meter again."
+    },
     "statistics_rebuild_skipped": {
       "title": "Watercare statistics were not rebuilt",
       "description": "Version 1.5.0 records water use as daily rows, each bill priced at the tariff in force when it started. It did not rebuild the stored Watercare statistics because they reach back further than the bills Watercare now returns, and a rebuild would lose that history. New days are added after the stored history. See the statistics documentation for a manual rebuild."
