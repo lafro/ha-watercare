@@ -22,8 +22,10 @@ from .const import (
     DEFAULT_WASTEWATER_RATIO,
     DOMAIN,
     ISSUE_REBUILD_SKIPPED,
+    ISSUE_SMART_METER,
     ISSUE_TARIFF_MISSING,
     NZ_TIMEZONE,
+    SMART_METER_DOCS_URL,
     STATISTICS_DOCS_URL,
     STATISTICS_VERSION,
     TARIFF_DOCS_URL,
@@ -122,6 +124,9 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
         """Fetch bills and the account; the statistics follow in the background."""
         try:
             account = await self.api.async_get_account()
+            # Before the bills: a smart-meter account may have none, or get
+            # an error for them.
+            self._async_check_meter(account)
             payload = await self.api.async_get_billing_periods()
         except WatercareAuthError as err:
             raise ConfigEntryAuthFailed(
@@ -302,6 +307,28 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
             entry, data={**entry.data, DATA_STATISTICS_VERSION: STATISTICS_VERSION}
         )
         return result
+
+    @callback
+    def _async_check_meter(self, account: AccountSummary) -> None:
+        """Raise or clear the repair issue for a smart meter.
+
+        Only manually read meters have the billing periods this integration
+        reads, and no smart-meter answer has been seen to build support on.
+        The bills from before a change to a smart meter still load.
+        """
+        issue_id = f"{ISSUE_SMART_METER}_{self.config_entry.entry_id}"
+        if not account.smart_meter:
+            ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+            return
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            issue_id,
+            is_fixable=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key=ISSUE_SMART_METER,
+            learn_more_url=SMART_METER_DOCS_URL,
+        )
 
     def _async_check_tariff(self, unpriced_year: int | None) -> int | None:
         """Raise or clear the repair issue for a financial year without prices.

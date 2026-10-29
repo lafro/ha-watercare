@@ -15,12 +15,13 @@ Based on the MIT-licensed [brunsy/ha-watercare](https://github.com/brunsy/ha-wat
 - Water cost for each day at the prices Watercare charged: each bill at the prices in force when its billing period started, spread over its days. Watercare's published residential prices for every financial year since 2018/19 are built in ([sources](docs/tariffs.md)).
 - Sensors for the last bill (usage, cost, daily average, reading type, efficiency band) and the account (balance, amount due, payment due date, meter number).
 - A repair notice each July if the integration does not yet know the new year's prices.
+- A repair notice if Watercare reports a smart meter, which the integration cannot read yet.
 - Re-authentication, reconfiguration and privacy-safe diagnostics.
 
 ## Requirements
 
 - Home Assistant 2026.10.0 or newer.
-- A Watercare account with a mechanical (manually read, about monthly) water meter. Smart meters are not supported yet; see [Known limitations](#known-limitations).
+- A Watercare account with a mechanical (manually read, about monthly) water meter. Smart meters are not supported yet, and the integration shows a repair notice for one; see [Known limitations](#known-limitations).
 
 ## Installation
 
@@ -98,9 +99,12 @@ In **Settings → Dashboards → Energy → Water consumption**, add *Watercare 
 
 How the numbers are built (details in [docs/statistics.md](docs/statistics.md)):
 
+- The first update imports every completed bill Watercare returns. On a real account that reaches back several years.
 - Each bill's volume is spread evenly over the days it covers, so day, week and month views show use where it happened rather than one spike when the bill arrives.
 - Each bill is priced at the prices in force when its billing period started, as Watercare charges it, so a bill that spans 1 July keeps the earlier year's prices. Its cost is spread over its days like its volume.
 - A poll only adds days after the stored history and never rewrites it.
+
+Comparing with Watercare's app: its yearly view shows calendar years, January to December, as the Energy dashboard's year view does. Watercare's financial year, from 1 July, only decides the prices. The app's monthly view shows one bar per bill, from one meter reading to the next, so its months are not calendar months.
 
 ## Data updates
 
@@ -171,9 +175,9 @@ automation:
 ## Known limitations
 
 - One Watercare account per Home Assistant instance.
-- Mechanical meters only. Smart-meter data uses different endpoints whose formats have not been verified; support needs a real sample first.
+- Mechanical meters only. Smart-meter data uses different endpoints whose formats have not been verified; support needs a real sample first. If Watercare reports a smart meter, or that the meter was replaced with one, a repair notice, **Watercare smart meters are not supported yet**, says so. Bills from the old meter still load, but no new ones appear, and Watercare fails to set up if it has no bills from an old meter. The notice goes away by itself once Watercare reports a manually read meter.
 - Daily values are an even split of each bill, not measured daily use. A mechanical meter is read about monthly in whole kilolitres.
-- Costs are calculated from published residential prices; Watercare's API provides no dollar figures. Infrastructure growth charges, trade waste, late fees and credits are not included. Business accounts use different prices and are not supported.
+- Costs are calculated from published residential prices. Watercare's account history does list the amount of each bill and payment, but the integration does not read it yet. Infrastructure growth charges, trade waste, late fees and credits are not included. Business accounts use different prices and are not supported.
 - A bill that spans 1 July is charged at the prices of the year it starts in. This matches the one such bill checked so far to the cent (a split by day would have been about 3.7% too high); if one of your bills shows otherwise, please open an issue.
 - History before 1 July 2018 is priced at the 2018/19 prices, the earliest year in the table.
 
@@ -182,6 +186,7 @@ automation:
 - **Setup says it cannot connect:** Watercare may be down for maintenance. Try again later.
 - **Re-authentication requested:** Watercare rejected the stored password. Enter the current one.
 - **Costs stopped after 1 July:** the integration does not know the new year's prices yet. Fix the repair notice or update the integration.
+- **A "smart meters are not supported yet" repair notice:** Watercare reports a smart meter at the property. See [Known limitations](#known-limitations).
 - **A "statistics were not rebuilt" repair notice:** see [docs/statistics.md](docs/statistics.md#when-the-rebuild-is-skipped).
 - **Watercare in an error state after upgrading to 1.5.0, and no water in the Energy dashboard:** reload Watercare, or update to 1.5.1. See [docs/migration.md](docs/migration.md#if-a-150-upgrade-got-stuck).
 - For a reproducible problem, use the integration's ⋮ menu to **Enable debug logging**, reproduce it, then **Disable debug logging** to download the log. Download diagnostics from the same menu. Logs and diagnostics leave out credentials, account and meter numbers and usage, but review them before sharing and follow the issue form's privacy warning.

@@ -58,7 +58,9 @@ ALL_STATISTIC_IDS: Final = (
 # Repair issues.
 ISSUE_TARIFF_MISSING: Final = "tariff_missing"
 ISSUE_REBUILD_SKIPPED: Final = "statistics_rebuild_skipped"
+ISSUE_SMART_METER: Final = "smart_meter"
 
 DOCS_URL: Final = "https://github.com/lafro/ha-watercare"
 TARIFF_DOCS_URL: Final = f"{DOCS_URL}/blob/main/docs/tariffs.md"
 STATISTICS_DOCS_URL: Final = f"{DOCS_URL}/blob/main/docs/statistics.md"
+SMART_METER_DOCS_URL: Final = f"{DOCS_URL}#known-limitations"

@@ -3,6 +3,8 @@
 ## Unreleased
 
 - Re-authentication and reconfiguration no longer suggest adding a different Watercare account as a new entry, which Home Assistant refuses because only one Watercare entry is allowed. They now say to remove Watercare and add it again to switch accounts. The README's new **Switching accounts** section says what that does to the stored statistics: depending on the new account's bills, the old account's history is either kept, with the new account's days added after it and a repair notice, or replaced.
+- If Watercare says your property has a smart water meter, or that your meter was replaced with one, Home Assistant now shows a repair notice, **Watercare smart meters are not supported yet**, under **Settings → System → Repairs**. The integration can only read bills for manually read meters for now, so no new bills appear: the bills from your old meter still show, and if there are none, Watercare fails to set up and keeps retrying. Before, nothing explained why. The notice goes away by itself if Watercare reports a manually read meter again.
+- The README now says that the integration's first update brings in every bill Watercare has, which on a real account goes back several years, and that the yearly view in Watercare's app shows calendar years (January to December). It no longer says Watercare gives no dollar figures: Watercare's account history lists the amount of each bill and payment, which the integration does not read yet.
 
 ## 1.5.1
 

@@ -170,6 +170,34 @@ def test_account_summary() -> None:
     assert account.amount_due == 123.45
     assert account.overdue_amount == 0
     assert account.payment_due_date == "2026-09-25T23:59:59Z"
+    assert not account.meter_changed_to_smart
+    assert not account.smart_meter
+
+
+@pytest.mark.parametrize(
+    ("changes", "changed", "smart"),
+    [
+        ({"meterType": "smartmeter-single"}, False, True),
+        ({"meterType": "smartmeter-other"}, False, True),
+        ({"meterType": "Mechanical"}, False, False),
+        ({"meterType": None}, False, False),
+        ({"transitionedMeterFromMMToSM": True}, True, True),
+        ({"transitionedMeterFromMMToSM": False}, False, False),
+        ({"transitionedMeterFromMMToSM": "true"}, False, False),
+        (
+            {"meters": [{"id": METER_NUMBER, "transitionedMeterFromMMToSM": True}]},
+            True,
+            True,
+        ),
+    ],
+)
+def test_account_summary_smart_meter(
+    changes: dict[str, object], *, changed: bool, smart: bool
+) -> None:
+    account = AccountSummary.from_json([{**ACCOUNT_PAYLOAD[0], **changes}])
+    assert account is not None
+    assert account.meter_changed_to_smart is changed
+    assert account.smart_meter is smart
 
 
 def test_account_summary_partial_record() -> None:
@@ -190,6 +218,7 @@ def test_account_summary_partial_record() -> None:
     assert account.account_balance is None
     assert account.meter_number is None
     assert account.meter_type is None
+    assert not account.smart_meter
 
 
 @pytest.mark.parametrize(

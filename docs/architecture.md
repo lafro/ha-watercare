@@ -14,7 +14,7 @@ What users see is in the [README](../README.md). The statistics model has its ow
 | `api.py` | The customer-app API client: Azure AD B2C sign-in, token refresh, the account record and the billing periods, and the two error types Home Assistant must tell apart. |
 | `session.py` | A short-lived session from Home Assistant's own helper for each sign-in, with a cookie jar of its own. |
 | `models.py` | Typed, tolerant parsing of the account record and the billing periods. Raw payloads are not kept, so they cannot reach logs or diagnostics. |
-| `coordinator.py` | The `DataUpdateCoordinator`. A poll fetches the account and the bills and prices the latest bill; the statistics update follows in a background task. Raises and clears the tariff repair issue. |
+| `coordinator.py` | The `DataUpdateCoordinator`. A poll fetches the account and the bills and prices the latest bill; the statistics update follows in a background task. Raises and clears the tariff and smart-meter repair issues. |
 | `statistics.py` | The statistics model: each bill spread over its days, priced at the tariff of its start date, appended after the stored history; the one-off rebuild from 1.4.x and the check that it would lose nothing. |
 | `tariffs.py` | Watercare's published residential prices by financial year, and the schedule that combines them with prices entered in the options. |
 | `sensor.py` | Eleven sensors, each a `SensorEntityDescription`, on one service device. |
@@ -105,7 +105,7 @@ The account sensors (balance, amount due, overdue amount) have no state class ei
 - **Setup** signs in before creating the entry, sets the account number as the unique id, and shows `invalid_auth`, `cannot_connect` or `unknown` on failure. Only one entry is allowed: the statistic ids are shared, so a second account would overwrite the first one's history. ✅ (code)
 - **Options** hold the wastewater ratio and the current financial year's prices, pre-filled from the published table or an earlier entry. For a year with no known prices the fields start empty (the `new_year` step), and all three or none must be entered, so saving the form unchanged can never store last year's prices as a guess. Saving reloads the entry. ✅ (code)
 - **Re-authentication** asks for the current password when Watercare rejects the stored one. **Reconfigure** changes the email and password for the same account. ✅ (code)
-- **Repairs:** when the cost statistics pause for a year without prices, or the current year has none yet, a fixable repair issue asks for that year's prices; fixing it stores them for that year only and reloads the entry. A second, non-fixable issue explains a skipped rebuild ([statistics.md](statistics.md#when-the-rebuild-is-skipped)). Removing the entry deletes both issues and keeps the statistics. ✅ (code)
+- **Repairs:** when the cost statistics pause for a year without prices, or the current year has none yet, a fixable repair issue asks for that year's prices; fixing it stores them for that year only and reloads the entry. A second, non-fixable issue explains a skipped rebuild ([statistics.md](statistics.md#when-the-rebuild-is-skipped)), and a third says smart meters are not supported yet ([Smart meters](#smart-meters)). Removing the entry deletes all three and keeps the statistics. ✅ (code)
 
 ## Entity-registry fixes from earlier releases (`__init__.py`)
 
@@ -122,3 +122,5 @@ Diagnostics get pasted into public issues, so they hold only shapes, counts, dat
 ## Smart meters
 
 Only `mechanicalmonthly` is fetched. Up to 1.4.1 the code kept the endpoint constants and an endpoint option, fixed to `mechanicalmonthly`, as a seam for re-adding smart meters. 1.5.0 removed them: the migration drops the option and nothing reads it. Re-adding smart-meter support starts from a real smart-meter response, because their payloads have never been seen ([known-unknowns.md](known-unknowns.md#known-unknowns)). ✅ (code)
+
+Each poll checks the account before it fetches the bills, because a smart-meter account may have none, or get an error for them. If `meterType` is anything but `mechanical` (Watercare's app also knows `smartmeter-single` and `smartmeter-other`), or `transitionedMeterFromMMToSM` is `true` on the account or one of its meters, it raises the non-fixable repair issue `smart_meter_<entry id>`. Otherwise it deletes the issue. A missing `meterType` raises nothing. Polling is otherwise unchanged: the bills from before a change to a smart meter still load. ✅ (code)

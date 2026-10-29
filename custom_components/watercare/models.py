@@ -15,6 +15,8 @@ from typing import Any
 
 from .const import NZ_TIMEZONE
 
+_CHANGED_TO_SMART = "transitionedMeterFromMMToSM"
+
 
 class WatercarePayloadError(ValueError):
     """Raised when a payload does not have the expected overall shape."""
@@ -149,6 +151,20 @@ class AccountSummary:
     payment_due_date: str | None
     meter_type: str | None
     meter_number: str | None
+    meter_changed_to_smart: bool
+
+    @property
+    def smart_meter(self) -> bool:
+        """Whether Watercare reports a smart meter, or a meter changed to one.
+
+        Watercare's app knows the meter types ``mechanical``,
+        ``smartmeter-single`` and ``smartmeter-other``. Only ``mechanical``
+        meters have the billing periods this integration reads. A missing
+        type says nothing either way, so it does not count.
+        """
+        if self.meter_changed_to_smart:
+            return True
+        return self.meter_type is not None and self.meter_type.lower() != "mechanical"
 
     @classmethod
     def from_json(cls, payload: Any) -> AccountSummary | None:
@@ -166,9 +182,18 @@ class AccountSummary:
         if not str(account_number):
             return None
         meters = record.get("meters")
+        if not isinstance(meters, list):
+            meters = []
         meter_number: str | None = None
-        if isinstance(meters, list) and meters and isinstance(meters[0], dict):
+        if meters and isinstance(meters[0], dict):
             meter_number = _optional_str(meters[0].get("id"))
+        # Watercare's app flags a meter changed from manually read to smart.
+        # No answer with the flag has been seen, so where it sits is not
+        # known: look on the account and on each of its meters.
+        changed_to_smart = any(
+            isinstance(item, dict) and item.get(_CHANGED_TO_SMART) is True
+            for item in (record, *meters)
+        )
         return cls(
             account_number=str(account_number),
             account_balance=_optional_number(record.get("accountBalance")),
@@ -181,6 +206,7 @@ class AccountSummary:
             ),
             meter_type=_optional_str(record.get("meterType")),
             meter_number=meter_number,
+            meter_changed_to_smart=changed_to_smart,
         )
 
 
