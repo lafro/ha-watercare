@@ -34,24 +34,32 @@ Retrieved 8 October 2026. The SHA-256 prefix identifies the exact file that was 
 
 ## How a bill is priced
 
-Watercare charges a whole bill at the prices in force when its billing period **starts**. A bill that runs from June into July is charged entirely at the earlier financial year's prices, and the new prices apply from the first bill that starts on or after 1 July. This was checked against a real bill whose period spanned 1 July 2026: pricing the whole bill at 2025/26 prices reproduced its total to the cent, while splitting it by day between 2025/26 and 2026/27 prices overstated it by about 3.7%. There is no record that any other bill spanning 1 July has been checked (A5 in [known-unknowns.md](known-unknowns.md)). If another such bill shows a different split, please open an issue. The rule is one function, `pricing_date` in [`statistics.py`](../custom_components/watercare/statistics.py).
+Watercare charges a whole bill at the prices in force when its billing period **starts**. A bill that runs from June into July is charged entirely at the earlier financial year's prices, and the new prices apply from the first bill that starts on or after 1 July. The first bill checked spanned 1 July 2026: pricing the whole bill at 2025/26 prices reproduced its total to the cent, while splitting it by day between 2025/26 and 2026/27 prices overstated it by about 3.7%. Bills spanning 1 July in other years have matched the same rule to the cent since (A5 in [known-unknowns.md](known-unknowns.md)). If one of yours shows a different split, please open an issue. The rule is one function, `pricing_date` in [`statistics.py`](../custom_components/watercare/statistics.py).
 
-For each bill, at its start date's prices:
+At those prices, a bill has three charge lines, each rounded to the cent:
 
-- water cost = litres ÷ 1,000 × water price;
-- wastewater cost = litres ÷ 1,000 × wastewater ratio × wastewater price;
-- fixed charge = yearly fixed charge ÷ 365 × Watercare's day count for the bill.
+- **Water** = kilolitres × water price.
+- **Wastewater** = wastewater volume × wastewater price. The wastewater volume is kilolitres × the wastewater ratio, rounded to 0.01 kL, half to even: 9 kL × 0.785 = 7.065 kL is charged as 7.06 kL, and 11 kL × 0.785 = 8.635 kL as 8.64 kL. The bill's meter-reading box prints the same volume rounded half up, so it can show 0.01 kL more than the charge line uses.
+- **Fixed charge** = yearly fixed charge ÷ the days in that financial year × the days in the bill. A financial year has 366 days when it contains 29 February (2023/24 and 2027/28, for example), and 365 otherwise. The days in the bill count both of its dates, as Watercare does.
 
-Each day of the bill gets an equal share of the bill's litres and fixed-charge days, priced the same way, so the daily rows add up to the bill.
+The bill is the sum of the three rounded lines, which can differ by a cent from rounding the unrounded sum. Every real bill checked against these rules matched to the cent. The integration works out the same three lines (`price_bill` in [`statistics.py`](../custom_components/watercare/statistics.py)), then spreads each line evenly over the bill's days, so the daily rows add up to the bill exactly.
 
-Assumptions to know about:
+Up to 1.5.1 the integration divided the fixed charge by 365 in every year and rounded nothing, so most bills came out a few cents off. Days recorded by those versions keep those costs: the integration never reprices stored days, and only the manual rebuild in [statistics.md](statistics.md#when-the-rebuild-is-skipped) recalculates them.
 
-- **Daily fixed charge.** Watercare invoices the fixed charge "at a daily rate". The integration divides the yearly charge by 365 in every year, including leap years.
-- **Rounding.** Watercare rounds each bill line to the cent; the statistics keep unrounded daily values.
+One thing is assumed: which way Watercare rounds a line that comes to exactly half a cent is not recorded here. The integration rounds it to even, as Watercare rounds the volume. It can only happen with some prices and volumes, and moves a bill by one cent at most.
 
 ## Checking against a bill
 
-A bill's total should equal water + wastewater + fixed charge as above, using the row for the financial year in which the bill **starts**. For example, a made-up bill of 12 kL over a 30-day period starting in August 2025 (2025/26) gives 12 × 2.296 + 12 × 0.785 × 3.994 + 332 ÷ 365 × 30 = NZD 92.46.
+A bill's total should equal the three lines as above, using the row for the financial year in which the bill **starts**. For example, a made-up bill of 13 kL over a 30-day period starting in August 2026 (2026/27, 365 days):
+
+| Line | Working | Charge |
+|---|---|---|
+| Water | 13 × 2.46 = 31.98 | NZD 31.98 |
+| Wastewater | 13 × 0.785 = 10.205 → 10.20 kL; × 4.28 = 43.656 | NZD 43.66 |
+| Fixed charge | 355.90 ÷ 365 × 30 = 29.252 | NZD 29.25 |
+| **Bill** | | **NZD 104.89** |
+
+Without the rounding rules (10.205 kL, and no line rounded) the same bill comes to NZD 104.91.
 
 Releases up to 1.4.1 defaulted to 2.296 / 3.994 / 332 and labelled them as the 2026/27 prices, because they matched a bill issued after 1 July 2026. They are the **2025/26** prices: that bill's period began before 1 July, so Watercare charged it at 2025/26 prices. 1.4.x priced every past bill with them. From 1.5.0 each bill uses the prices of the year it starts in, so bills that start before 1 July 2025 come out lower, and bills that start on or after 1 July 2026 higher, than 1.4.x showed.
 
