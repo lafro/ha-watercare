@@ -268,7 +268,7 @@
     'last_changed': <ANY>,
     'last_reported': <ANY>,
     'last_updated': <ANY>,
-    'state': '104.91',
+    'state': '104.89',
   })
 # ---
 # name: test_sensors[sensor.watercare_last_bill_usage-entry]
@@ -321,9 +321,9 @@
       'billing_period_usage': 13000,
       'consumption_rate_per_1000L': 2.46,
       'cost_currency': 'NZD',
-      'current_period_cost': 104.91,
+      'current_period_cost': 104.89,
       'current_period_cost_consumption': 31.98,
-      'current_period_cost_wastewater': 43.68,
+      'current_period_cost_wastewater': 43.66,
       'daily_average': 433.0,
       <EntityStateAttribute.DEVICE_CLASS: 'device_class'>: 'water',
       <EntityStateAttribute.FRIENDLY_NAME: 'friendly_name'>: 'Watercare Last bill usage',

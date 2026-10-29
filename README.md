@@ -174,7 +174,7 @@ automation:
 - Mechanical meters only. Smart-meter data uses different endpoints whose formats have not been verified; support needs a real sample first.
 - Daily values are an even split of each bill, not measured daily use. A mechanical meter is read about monthly in whole kilolitres.
 - Costs are calculated from published residential prices; Watercare's API provides no dollar figures. Infrastructure growth charges, trade waste, late fees and credits are not included. Business accounts use different prices and are not supported.
-- A bill that spans 1 July is charged at the prices of the year it starts in. This matches the one such bill checked so far to the cent (a split by day would have been about 3.7% too high); if one of your bills shows otherwise, please open an issue.
+- A bill that spans 1 July is charged at the prices of the year it starts in. This matched every such bill checked so far to the cent (a split by day was about 3.7% too high on the first one); if one of your bills shows otherwise, please open an issue.
 - History before 1 July 2018 is priced at the 2018/19 prices, the earliest year in the table.
 
 ## Troubleshooting

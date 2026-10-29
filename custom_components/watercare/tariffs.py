@@ -27,8 +27,6 @@ from .const import (
     CONF_WATER_RATE,
 )
 
-DAYS_PER_YEAR: Final = Decimal(365)
-
 
 @dataclass(frozen=True, slots=True)
 class Tariff:
@@ -74,6 +72,11 @@ LATEST_PUBLISHED_YEAR: Final = max(PUBLISHED_TARIFFS)
 def financial_year(day: date) -> int:
     """Return the financial year (by its starting calendar year) of a date."""
     return day.year if day.month >= 7 else day.year - 1  # noqa: PLR2004 - July
+
+
+def days_in_financial_year(year: int) -> int:
+    """Return the days in a financial year: 366 when it contains 29 February."""
+    return (date(year + 1, 7, 1) - date(year, 7, 1)).days
 
 
 def financial_year_label(year: int) -> str:

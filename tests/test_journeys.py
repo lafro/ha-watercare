@@ -96,9 +96,20 @@ def test_a_bill_is_priced_as_docs_tariffs_says() -> None:
     prices = Prices(Decimal("2.46"), Decimal("4.28"), Decimal("355.90"))
     cost = journeys.bill_cost(bill, prices, Decimal("0.785"))
     assert cost["water_cost"] == Decimal("22.14")
-    assert cost["wastewater_cost"] == Decimal("30.2382")
-    fixed = Decimal("355.90") / 365 * 30
-    assert cost["total_cost"] == Decimal("22.14") + Decimal("30.2382") + fixed
+    # 9 x 0.785 = 7.065 kL, charged as 7.06 kL: 7.06 x 4.28 = 30.2168.
+    assert cost["wastewater_cost"] == Decimal("30.22")
+    # 355.90 / 365 x 30 = 29.2521.
+    assert cost["total_cost"] == Decimal("22.14") + Decimal("30.22") + Decimal("29.25")
+
+
+def test_the_fixed_charge_counts_the_days_of_its_financial_year() -> None:
+    assert journeys.year_days(2026) == 365
+    assert journeys.year_days(2027) == 366
+    prices = Prices(Decimal("2.46"), Decimal("4.28"), Decimal("366.00"))
+    plain = journeys.bill_cost(_bill(date(2026, 7, 4), 30, 0), prices, Decimal(0))
+    leap = journeys.bill_cost(_bill(date(2027, 7, 4), 30, 0), prices, Decimal(0))
+    assert plain["total_cost"] == Decimal("30.08")  # 366 / 365 x 30
+    assert leap["total_cost"] == Decimal("30.00")  # 366 / 366 x 30
 
 
 def test_every_day_of_every_bill_is_expected_once() -> None:
@@ -114,7 +125,8 @@ def test_every_day_of_every_bill_is_expected_once() -> None:
     # The bill that spans 1 July is priced at its start's year, 2024/25.
     prices = Pricing().prices(2024)
     assert prices is not None
-    assert expected.totals["water_cost"][_BILLS[1]] == 12 * prices.water
+    assert prices.water == Decimal("2.142")
+    assert expected.totals["water_cost"][_BILLS[1]] == Decimal("25.70")  # 25.704
 
 
 def test_an_update_adds_only_later_days_and_never_reprices() -> None:

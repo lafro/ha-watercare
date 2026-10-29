@@ -69,9 +69,10 @@ async def test_usage_sensor_attributes_and_values(
     assert "meter_number" not in usage.attributes
     assert "state_class" not in usage.attributes
     assert ha.states.get("sensor.watercare_reading_type").state == "Estimate"
-    # 13 kL over 30 days at 2026/27 prices:
-    # 13 x 2.46 + 13 x 0.785 x 4.28 + 355.90 / 365 x 30 = 104.91
-    assert ha.states.get("sensor.watercare_last_bill_cost").state == "104.91"
+    # 13 kL over 30 days at 2026/27 prices, each line rounded to the cent:
+    # 13 x 2.46 = 31.98; 10.205 -> 10.20 kL x 4.28 = 43.66; 355.90 / 365 x 30
+    # = 29.25. Without the rounding rules it would show 104.91.
+    assert ha.states.get("sensor.watercare_last_bill_cost").state == "104.89"
     assert ha.states.get("sensor.watercare_payment_due").state == (
         "2026-09-25T23:59:59+00:00"
     )
