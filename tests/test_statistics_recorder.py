@@ -107,8 +107,8 @@ async def test_first_import_writes_daily_rows(ha: HomeAssistant) -> None:
     assert metadata[STAT_TOTAL_COST][1]["unit_of_measurement"] == "NZD"
 
     total = await _rows(ha, STAT_TOTAL_COST)
-    june_cost = bill_cost(JUNE, [JUNE, JULY], PUBLISHED, RATIO)
-    july_cost = bill_cost(JULY, [JUNE, JULY], PUBLISHED, RATIO)
+    june_cost = bill_cost(JUNE, PUBLISHED, RATIO)
+    july_cost = bill_cost(JULY, PUBLISHED, RATIO)
     assert june_cost is not None
     assert july_cost is not None
     assert total[-1]["sum"] == pytest.approx(float(june_cost.total + july_cost.total))
@@ -196,8 +196,8 @@ async def test_cost_pauses_without_a_tariff_and_resumes(ha: HomeAssistant) -> No
     assert resumed.first_day_without_tariff is None
     total = await _rows(ha, STAT_TOTAL_COST)
     assert len(total) == 62
-    expected = bill_cost(spanning, [spanning, unknown], schedule, RATIO)
-    expected_unknown = bill_cost(unknown, [spanning, unknown], schedule, RATIO)
+    expected = bill_cost(spanning, schedule, RATIO)
+    expected_unknown = bill_cost(unknown, schedule, RATIO)
     assert expected is not None
     assert expected_unknown is not None
     assert total[-1]["sum"] == pytest.approx(
@@ -278,8 +278,8 @@ async def test_rebuild_replaces_legacy_rows(ha: HomeAssistant) -> None:
     assert rows[-1]["sum"] == pytest.approx(20000)
     total = await _rows(ha, STAT_TOTAL_COST)
     assert len(total) == 62
-    june = bill_cost(JUNE, [JUNE, JULY], PUBLISHED, RATIO)
-    july = bill_cost(JULY, [JUNE, JULY], PUBLISHED, RATIO)
+    june = bill_cost(JUNE, PUBLISHED, RATIO)
+    july = bill_cost(JULY, PUBLISHED, RATIO)
     assert june is not None
     assert july is not None
     assert total[-1]["sum"] == pytest.approx(float(june.total + july.total))
@@ -353,10 +353,7 @@ async def test_an_import_reads_only_after_queued_writes(ha: HomeAssistant) -> No
     assert rows[-1]["sum"] == pytest.approx(33000)
     total = await _rows(ha, STAT_TOTAL_COST)
     assert len(total) == 92
-    costs = [
-        bill_cost(period, [JUNE, JULY, AUGUST], PUBLISHED, RATIO)
-        for period in (JUNE, JULY, AUGUST)
-    ]
+    costs = [bill_cost(period, PUBLISHED, RATIO) for period in (JUNE, JULY, AUGUST)]
     assert total[-1]["sum"] == pytest.approx(
         float(sum(cost.total for cost in costs if cost is not None))
     )

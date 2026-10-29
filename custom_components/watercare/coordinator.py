@@ -159,9 +159,7 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
         return WatercareData(
             account=account,
             latest_period=latest,
-            latest_cost=bill_cost(
-                latest, periods, self.schedule, self.wastewater_ratio
-            ),
+            latest_cost=bill_cost(latest, self.schedule, self.wastewater_ratio),
             latest_tariff=self.schedule.for_day(pricing_date(latest)),
             period_count=len(periods),
             skipped_periods=parsed.skipped,

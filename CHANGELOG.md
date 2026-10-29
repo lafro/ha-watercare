@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- The water, wastewater and fixed charges now match Watercare's bills to the cent. The integration works out each bill the way Watercare does: each charge on the bill is rounded to the cent, the wastewater volume is rounded to a hundredth of a kilolitre first, and in a year that has a 29 February (Watercare's year runs from 1 July) the yearly fixed charge is shared over 366 days instead of 365. Before, most bills came out a few cents different from Watercare's. The **Last bill cost** sensor shows the new figure straight away.
+- Days already in your Energy dashboard keep the cost they were recorded with. The integration never changes stored history by itself, so only bills recorded after this update use the new arithmetic, and earlier days stay a few cents a bill different from your bills. If you want them recalculated, follow the manual rebuild in [docs/statistics.md](docs/statistics.md#when-the-rebuild-is-skipped): it deletes and re-imports the Watercare statistics, so export them first, and removing and re-adding Watercare resets its options, so note any prices or wastewater ratio you entered.
 - Re-authentication and reconfiguration no longer suggest adding a different Watercare account as a new entry, which Home Assistant refuses because only one Watercare entry is allowed. They now say to remove Watercare and add it again to switch accounts. The README's new **Switching accounts** section says what that does to the stored statistics: depending on the new account's bills, the old account's history is either kept, with the new account's days added after it and a repair notice, or replaced.
 
 ## 1.5.1

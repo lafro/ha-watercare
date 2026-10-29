@@ -479,9 +479,7 @@ async def test_upgrade_from_1_4_x_end_to_end(
 
     # The legacy rows are gone and every statistic holds one row per day.
     periods = parse_billing_periods(default_periods()).periods
-    costs = [
-        bill_cost(p, periods, TariffSchedule({}), Decimal("0.785")) for p in periods
-    ]
+    costs = [bill_cost(p, TariffSchedule({}), Decimal("0.785")) for p in periods]
     assert all(cost is not None for cost in costs)
     expected = {
         STAT_CONSUMPTION: 33000.0,
@@ -500,7 +498,7 @@ async def test_upgrade_from_1_4_x_end_to_end(
     # now cost more than the flat 1.4.x price gave them.
     assert costs[0] is not None
     assert round(costs[0].total, 2) == Decimal("93.37")
-    assert expected[STAT_TOTAL_COST] == pytest.approx(93.3727 + 76.7855 + 104.9095)
+    assert expected[STAT_TOTAL_COST] == pytest.approx(93.37 + 76.79 + 104.89)
 
     # The next poll adds nothing and keeps the rebuilt rows.
     await _refresh(ha, coordinator)
