@@ -152,6 +152,19 @@ def test_non_finite_statistics_and_balances_are_dropped() -> None:
     assert account.account_balance is None
 
 
+@pytest.mark.parametrize("key", ["billingPeriodFromDate", "billingPeriodToDate"])
+def test_a_date_with_no_auckland_date_skips_only_its_period(key: str) -> None:
+    # A "no date" placeholder is out of range once moved to Auckland time.
+    item = api_period(date(2026, 6, 3), date(2026, 7, 3), 12000)
+    item[key] = "9999-12-31T23:59:59Z"
+    assert BillingPeriod.from_json(item) is None
+    parsed = parse_billing_periods(
+        [item, api_period(date(2026, 7, 4), date(2026, 8, 3), 8000)]
+    )
+    assert parsed.skipped == 1
+    assert [period.end for period in parsed.periods] == [date(2026, 8, 3)]
+
+
 def test_parse_billing_periods_sorts_skips_and_dedupes() -> None:
     newest = api_period(date(2026, 7, 4), date(2026, 8, 3), 8000)
     oldest = api_period(date(2026, 6, 3), date(2026, 7, 3), 12000)

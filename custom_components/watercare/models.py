@@ -81,8 +81,12 @@ class BillingPeriod:
         usage = _usage_litres(item.get("waterUsage"))
         if start_ts is None or end_ts is None or usage is None:
             return None
-        start = local_date(start_ts)
-        end = local_date(end_ts)
+        try:
+            start = local_date(start_ts)
+            end = local_date(end_ts)
+        except OverflowError:
+            # No Auckland date, such as a "9999-12-31T23:59:59Z" placeholder.
+            return None
         if end < start:
             return None
 
