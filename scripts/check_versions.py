@@ -4,9 +4,12 @@ Usage: ``check_versions.py [REF] [--release-notes PATH] [--repository OWNER/NAME
 
 - ``manifest.json`` and ``pyproject.toml`` must carry the same version, with
   no ``v`` prefix.
-- When ``REF`` is a tag (``vX.Y.Z``), it must name that version.
-- ``CHANGELOG.md`` must have a non-empty ``## X.Y.Z`` section for it.
-- ``--release-notes PATH`` writes that section to ``PATH`` for the release.
+- When ``REF`` is a tag (``vX.Y.Z`` or ``vX.Y.ZbN``), it must name that
+  version.
+- ``CHANGELOG.md`` must have a non-empty ``## X.Y.Z`` section for it. A beta
+  version ``X.Y.ZbN`` uses the section of the release it previews, ``X.Y.Z``.
+- ``--release-notes PATH`` writes that section to ``PATH`` for the release,
+  after a line saying it is a beta when it is one.
 - ``--repository OWNER/NAME`` (the Release workflow passes
   ``$GITHUB_REPOSITORY``) requires the manifest's documentation and issue
   tracker to point at that repository, so a release cannot be cut before the
@@ -16,6 +19,7 @@ Usage: ``check_versions.py [REF] [--release-notes PATH] [--repository OWNER/NAME
 from __future__ import annotations
 
 import json
+import re
 import sys
 import tomllib
 from pathlib import Path
@@ -24,6 +28,15 @@ ROOT = Path(__file__).resolve().parents[1]
 NOTES_OPTION = "--release-notes"
 REPOSITORY_OPTION = "--repository"
 MANIFEST = "custom_components/watercare/manifest.json"
+# Digits as release.yml reads them, [0-9]: Python's \d also takes other
+# scripts' digits.
+BETA_VERSION = re.compile(r"([0-9]+\.[0-9]+\.[0-9]+)b[0-9]+")
+
+
+def changelog_version(version: str) -> str:
+    """Return the version whose CHANGELOG section describes ``version``."""
+    beta = BETA_VERSION.fullmatch(version)
+    return beta.group(1) if beta else version
 
 
 def changelog_section(version: str, text: str) -> str:
@@ -108,9 +121,15 @@ def main(argv: list[str] | None = None, root: Path = ROOT) -> None:
     if repository is not None:
         check_repository(manifest, repository)
 
+    notes_version = changelog_version(manifest_version)
     notes = changelog_section(
-        manifest_version, (root / "CHANGELOG.md").read_text(encoding="utf-8")
+        notes_version, (root / "CHANGELOG.md").read_text(encoding="utf-8")
     )
+    if notes_version != manifest_version:
+        notes = (
+            f"Beta of {notes_version} for testing. HACS offers it only to "
+            "installations that turn on beta versions for this repository.\n\n" + notes
+        )
     if notes_path is not None:
         notes_path.write_text(notes, encoding="utf-8")
 
