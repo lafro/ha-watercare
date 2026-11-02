@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.6.0
 
 Shows the amount of your latest Watercare bill, works out each bill's cost to the cent, explains when Watercare is down for maintenance or reports a smart meter, and gives two sensors the names Watercare's app uses.
 
