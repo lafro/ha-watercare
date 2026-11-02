@@ -85,7 +85,7 @@ One service device, **Watercare**, represents the account.
 
 Watercare publishes only completed billing periods, so these describe the last issued bill, not use accruing now. The usage, cost and amount sensors have no state class; the Energy dashboard uses the statistics below.
 
-**Average daily usage** and **Due date** were called **Daily average** and **Payment due** before 1.6.0, to match Watercare's app. An installation set up before 1.6.0 keeps their entity IDs, `sensor.watercare_daily_average` and `sensor.watercare_payment_due`; a new one gets `sensor.watercare_average_daily_usage` and `sensor.watercare_due_date`.
+**Average daily usage** and **Due date** were called **Daily average** and **Payment due** before 1.6.0, to match Watercare's app. On an installation set up before 1.6.0, the two sensors keep their entity IDs, `sensor.watercare_daily_average` and `sensor.watercare_payment_due`; a new installation gets `sensor.watercare_average_daily_usage` and `sensor.watercare_due_date`.
 
 ## Energy dashboard
 
@@ -181,14 +181,14 @@ automation:
 - Mechanical meters only. Smart-meter data uses different endpoints whose formats have not been verified; support needs a real sample first. If Watercare reports a smart meter, or that the meter was replaced with one, a repair notice, **Watercare smart meters are not supported yet**, says so. Bills from the old meter still load, but no new ones appear, and Watercare fails to set up if it has no bills from an old meter. The notice goes away by itself once Watercare reports a manually read meter.
 - Daily values are an even split of each bill, not measured daily use. A mechanical meter is read about monthly in whole kilolitres.
 - The cost statistics and **Last bill cost** are calculated from published residential prices, so they leave out infrastructure growth charges, trade waste, late fees and credits. **Last bill amount** is the newest bill's total as Watercare issued it, so it can include charges and credits the calculation leaves out. Business accounts use different prices and are not supported.
-- Watercare's billing history names no billing period, so **Last bill amount** takes the period that ended on the bill's date or up to a week before it. If none did, as when the bill is listed before its period is, its period attributes stay empty until Watercare lists that period.
+- Watercare's billing history names no billing period, so **Last bill amount** takes the period that ended on the bill's date or up to a week before it. If no period ended in that week, the bill's amount and date still show, but its period attributes are empty. That happens while Watercare lists a bill before its billing period, until the period is listed, and for any bill dated more than a week after its period ended.
 - A bill that spans 1 July is charged at the prices of the year it starts in. This matched every such bill checked so far to the cent (a split by day was about 3.7% too high on the first one); if one of your bills shows otherwise, please open an issue.
 - History before 1 July 2018 is priced at the 2018/19 prices, the earliest year in the table.
 
 ## Troubleshooting
 
 - **Setup says Watercare is down for maintenance:** Watercare says its service is down for maintenance. Try again later. Once Watercare is set up, a maintenance outage shows the same message and the integration retries by itself.
-- **Setup says it cannot connect:** Watercare's service did not answer, or answered with an error. Try again later.
+- **Setup says it cannot connect:** Watercare's service did not answer, answered with an error, or its sign-in page was down for maintenance. Try again later.
 - **A "Watercare asks for a newer version" repair notice:** Watercare answered that its app needs updating, which most likely means its service has changed. Check HACS for an update to Watercare; if there is none yet, please open an issue. The notice goes away by itself once Watercare answers normally again.
 - **Re-authentication requested:** Watercare rejected the stored password. Enter the current one.
 - **Costs stopped after 1 July:** the integration does not know the new year's prices yet. Fix the repair notice or update the integration.

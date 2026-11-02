@@ -217,6 +217,13 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
                 "Could not read the Watercare bills' amounts: %s", type(err).__name__
             )
             return False
+        except Exception as err:  # noqa: BLE001 - the amount never fails the poll
+            # Only the error's type: its message could quote the response.
+            _LOGGER.warning(
+                "Unexpected error reading the Watercare bills' amounts: %s",
+                type(err).__name__,
+            )
+            return False
         self._last_bill = bills[-1] if bills else None
         return True
 

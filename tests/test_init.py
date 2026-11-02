@@ -55,6 +55,7 @@ from .common import (
     api_period,
     api_transaction,
     default_periods,
+    default_transactions,
     make_entry,
     stored_rows,
 )
@@ -535,7 +536,9 @@ async def test_upgrade_required_raises_a_notice_until_watercare_answers(
 
 
 async def test_the_last_bill_amount_survives_a_failed_read(
-    ha: HomeAssistant, mock_api: dict[str, AsyncMock]
+    ha: HomeAssistant,
+    mock_api: dict[str, AsyncMock],
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     mock_api["transactions"].side_effect = WatercareConnectionError("down")
     entry = make_entry()
@@ -555,6 +558,8 @@ async def test_the_last_bill_amount_survives_a_failed_read(
 
     for failure in (
         {"side_effect": WatercareAuthError("refused")},
+        # Nothing unexpected fails the poll either.
+        {"side_effect": RuntimeError("synthetic-secret-detail")},
         {"side_effect": None, "return_value": {"unexpected": True}},
     ):
         for name, value in failure.items():
@@ -565,6 +570,21 @@ async def test_the_last_bill_amount_survives_a_failed_read(
         amount = ha.states.get("sensor.watercare_last_bill_amount")
         assert amount.state == "98.76"
         assert amount.attributes["billing_period_end"] == "2026-09-02"
+    assert "Unexpected error reading the Watercare bills' amounts: RuntimeError" in (
+        caplog.text
+    )
+    assert "synthetic-secret-detail" not in caplog.text
+
+    # A placeholder date, which has no Auckland date, skips only its own item.
+    mock_api["transactions"].return_value = {
+        "items": [
+            {"date": "9999-12-31T23:59:59Z", "type": "bill", "amount": 1},
+            *default_transactions()["items"],
+        ]
+    }
+    await _refresh(ha, coordinator)
+    assert not coordinator.data.last_bill_fetch_failed
+    assert ha.states.get("sensor.watercare_last_bill_amount").state == "98.76"
 
     # A newer bill, before its period is in the bills: no period matches yet.
     mock_api["transactions"].return_value = {

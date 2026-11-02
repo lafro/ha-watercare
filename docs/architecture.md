@@ -1,6 +1,6 @@
 # Architecture
 
-How the code in `custom_components/watercare/` is put together, as of 1.5.1. Tags are explained in [README.md](README.md#accuracy-tags). Code claims marked ✅ were checked against 1.5.1 on 9 October 2026.
+How the code in `custom_components/watercare/` is put together, as of 1.6.0. Tags are explained in [README.md](README.md#accuracy-tags). Code claims marked ✅ were checked against 1.5.1 on 9 October 2026, and those about 1.6.0's changes against 1.6.0 on 2 November 2026.
 
 What users see is in the [README](../README.md). The statistics model has its own page, [statistics.md](statistics.md), and so do the prices, [tariffs.md](tariffs.md); this page links to them rather than repeating them.
 
@@ -38,7 +38,7 @@ Home Assistant, every 12 hours
     ├─ models.parse_billing_periods()     skip malformed periods, drop duplicates, sort
     ├─ statistics.bill_cost(latest bill)  at the tariff of the bill's start date
     ├─ api.async_get_transactions()       GET v1/account/{account}/transactions
-    │     (the latest issued bill's amount; a failure keeps the last one and never fails the poll)
+    │     (the latest issued bill's amount; a failure keeps the last one read since start-up and never fails the poll)
     └─ returns WatercareData ──▶ the sensors (CoordinatorEntity)
           │
           └─ hands the bills to the statistics task, which runs only after Home Assistant has started
@@ -52,7 +52,7 @@ Home Assistant, every 12 hours
 ✅ (code)
 
 - The account record is fetched once per poll, and the bills and transactions requests use the account number from it. ✅ (code)
-- The transactions list holds bills and payments with their dates and amounts but no billing period. The latest bill is matched to the latest billing period that ended on or up to seven days before the bill's date, read as an Auckland date ([known-unknowns.md](known-unknowns.md#known-unknowns)). A bill with no such period still shows its amount, without a period. If the transactions request fails or its answer cannot be read, the sensor keeps the last amount and the poll goes on. ✅ (code)
+- The transactions list holds bills and payments with their dates and amounts but no billing period. The latest bill is matched to the latest billing period that ended on or up to seven days before the bill's date, read as an Auckland date ([known-unknowns.md](known-unknowns.md#known-unknowns)). A bill with no such period still shows its amount, without a period. An item whose date has no Auckland date (a `9999-12-31` placeholder, say) is skipped. Bills are ordered by their timestamps, then their amounts, so of two bills on the same date the newest does not depend on the order Watercare lists them in. If the transactions request fails, or its answer cannot be read for any reason, the sensor keeps the amount read earlier since start-up, or stays unknown if there is none, and the poll goes on. ✅ (code)
 - Parsing is tolerant: unknown keys are ignored, and both timestamp forms Watercare sends are accepted (milliseconds on usage dates, none on the account's due date). A billing period is skipped only when it is not an object, a date is missing or unparseable, the end is before the start, or `waterUsage` is not a number, negative or non-finite (`NaN`, `Infinity`). A `null` or missing `waterUsage` counts as 0 litres and the period is kept ([known-unknowns.md](known-unknowns.md#assumptions-the-code-acts-on), A8). A `numberOfDays` that is missing, not a finite number or below 1 falls back to counting the days, both ends included, and a `dailyAverage` that is not a finite number becomes empty. A repeated period (same start and end) is kept once. ✅ (code)
 - Entities are thin. Each sensor is a description with a `value_fn` over the poll's `WatercareData`; the usage sensor also has an `attributes_fn` that keeps the 1.4.x attribute names for dashboards built on them. Unique ids are `<entry id>_<key>`. ✅ (code)
 
@@ -122,7 +122,7 @@ On every setup ✅ (code):
 
 ## Diagnostics
 
-Diagnostics get pasted into public issues, so they hold only shapes, counts, dates and statuses: the entry version, its data with the username, password, refresh token and identifiers redacted, the wastewater ratio, which years have entered prices, the latest published year, the coordinator's status, the latest bill's dates and reading type, and whether the latest issued bill was read, with its date and the billing period it matched. No account or meter number, balance, usage, cost or bill amount. ✅ (code; `tests/snapshots/test_diagnostics.ambr`)
+Diagnostics get pasted into public issues, so they hold only shapes, counts, dates and statuses: the entry version, its data with the username, password, refresh token and identifiers redacted, the wastewater ratio, which years have entered prices, the latest published year, the coordinator's status, the latest bill's dates and reading type, and whether the latest issued bill was read, with its date and whether a billing period matched it. No account or meter number, balance, usage, cost or bill amount. ✅ (code; `tests/snapshots/test_diagnostics.ambr`)
 
 ## Smart meters
 

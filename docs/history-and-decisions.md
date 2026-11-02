@@ -1,6 +1,6 @@
 # History and decisions
 
-Where the code came from, what changed and why, and the problems already solved, as of 1.5.1. Tags are explained in [README.md](README.md#accuracy-tags). The detail behind each step is in the other pages; this one is the "why".
+Where the code came from, what changed and why, and the problems already solved, as of 1.6.0. Tags are explained in [README.md](README.md#accuracy-tags). The detail behind each step is in the other pages; this one is the "why".
 
 ## Where this started
 
@@ -31,9 +31,13 @@ Releases up to 1.4.1 came from a GitHub fork of the original. That history is no
 - **1.5.0** is the first release from this standalone repository (not a GitHub fork), whose first commit imports 1.4.1's code with synthetic test data. The domain, entity unique ids and statistic ids are unchanged, so existing installations keep their entities, history and Energy dashboard configuration. It changed the statistics model (daily rows, each bill at its own year's prices, appended rather than recomputed, a one-off rebuild), replaced the flat price options with Watercare's published prices, and brought the project up to a stricter standard: typed models, a reconfigure step, a stored refresh token, privacy-safe diagnostics and logs, strict typing, a 95% per-module branch-coverage gate, snapshot tests, actions pinned to commits, and a gated Release workflow. It also removed the smart-meter seam. Details: [CHANGELOG](../CHANGELOG.md), [statistics.md](statistics.md), [tariffs.md](tariffs.md).
 - **1.5.1** stopped setup from waiting for the recorder. 1.5.0's rebuild held Home Assistant's start-up for 5 minutes and could leave the statistics empty; the statistics now run in the background after start-up. Details: [statistics.md](statistics.md#start-up-and-the-recorder).
 
+## 1.6.0
+
+- **1.6.0** prices each bill as Watercare does, to the cent; shows the real amount of the latest bill, read from the app's API with the existing sign-in ([Decisions](#decisions)); names Watercare's maintenance answer, and raises a repair notice when Watercare asks for a newer app or reports a smart meter; and gives two sensors the names Watercare's app uses, keeping existing entity ids. Details: [CHANGELOG](../CHANGELOG.md).
+
 ## Decisions
 
-The ones worth remembering, with their status in 1.5.1.
+The ones worth remembering, with their status in 1.6.0.
 
 **Mechanical meters only; smart meters removed.** Only the mechanical path can be tested against a real account. The smart-meter paths were inherited, unverified, and had defects: wrong period naming, an assumed payload shape and a time-zone bug in the daily path. Shipping confident-looking untested code was judged worse than not shipping it, so a smart-meter user gets nothing rather than something that might be wrong. 1.4.x kept a seam to re-add them; 1.5.0 removed it, and re-adding starts from a real smart-meter response. Still in force. ✅
 
@@ -57,7 +61,7 @@ The ones worth remembering, with their status in 1.5.1.
 
 **Never wait for the recorder in setup.** The recorder only works through its queue once Home Assistant has started, and start-up waits for config entries being set up. From 1.5.1 the statistics run in a background task after start-up. ✅ (code; [statistics.md](statistics.md#start-up-and-the-recorder))
 
-**Releases are immutable; defects are fixed forward.** On the fork, early iteration produced several same-day releases, which were consolidated into one current release. From 1.5.0, tags and releases cannot be moved, replaced or deleted, and a defect gets a new patch version ([release.md](release.md)). ✅
+**Releases are immutable; defects are fixed forward.** On the fork, early iteration produced several same-day releases, which were consolidated into one current release. From 1.5.0, tags and releases cannot be moved, replaced or deleted, and a defect gets a new patch version, or, in a beta, the next beta of the same version ([release.md](release.md)). ✅
 
 ## Problems already solved
 

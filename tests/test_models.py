@@ -256,6 +256,7 @@ def test_account_summary_rejects_unusable_payloads(payload: object) -> None:
         "2026-09-03T12:00:00.000Z",  # Auckland midnight of 4 September (NZST)
         "2026-09-04T00:00:00.000Z",  # UTC midnight of 4 September
         "2026-09-04T00:00:00Z",
+        "2026-09-04",  # a date alone reads as UTC midnight
     ],
 )
 def test_a_bills_date_is_its_auckland_date_in_either_form(stamp: str) -> None:
@@ -285,6 +286,8 @@ def test_parse_bills_keeps_only_usable_bills_oldest_first() -> None:
         {"date": "2026-06-05T00:00:00Z", "type": "bill", "amount": "1.00"},
         {"date": "2026-06-06T00:00:00Z", "type": "bill", "amount": True},
         {"type": "bill", "amount": 1},
+        # A "no date" placeholder: out of range once moved to Auckland time.
+        {"date": "9999-12-31T23:59:59Z", "type": "bill", "amount": 1},
         "not an item",
     ]
     assert parse_bills({"items": items}) == (
@@ -293,6 +296,19 @@ def test_parse_bills_keeps_only_usable_bills_oldest_first() -> None:
         IssuedBill(date(2026, 9, 4), 98.76),
     )
     assert parse_bills({"items": []}) == ()
+
+
+def test_bills_on_one_date_are_ordered_by_time_then_amount() -> None:
+    # All three are 4 September in Auckland, whatever order Watercare uses.
+    midnight = {"date": "2026-09-03T12:00:00Z", "type": "bill", "amount": 50}
+    later = {"date": "2026-09-04T03:00:00Z", "type": "bill", "amount": 20}
+    larger = {"date": "2026-09-04T03:00:00Z", "type": "bill", "amount": 30}
+    for items in ([midnight, later, larger], [larger, later, midnight]):
+        assert parse_bills({"items": items}) == (
+            IssuedBill(date(2026, 9, 4), 50),
+            IssuedBill(date(2026, 9, 4), 20),
+            IssuedBill(date(2026, 9, 4), 30),
+        )
 
 
 @pytest.mark.parametrize("payload", [None, [], {}, {"items": None}, {"items": {}}])

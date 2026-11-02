@@ -1,6 +1,6 @@
 # Known unknowns, assumptions and checks
 
-The honest register, as of 1.5.1. If you are about to rely on something load-bearing, check here first. Tags are explained in [README.md](README.md#accuracy-tags).
+The honest register, as of 1.6.0. If you are about to rely on something load-bearing, check here first. Tags are explained in [README.md](README.md#accuracy-tags).
 
 ## Assumptions the code acts on
 
@@ -53,6 +53,7 @@ It recurs, so here is the answer. ✅ (code and package metadata, 9 October 2026
 
 - First written on 8 August 2026 for 1.4.1, from the code and its git history, the manifest, PyPI metadata and a live installation, not from memory. A second review then cross-read every ✅ claim against the code, the CI configuration, the fork point and PyPI, and re-computed a cost example from a real bill. All checked claims matched except one, which was corrected: the coordinator did not branch on the endpoint; that was a documented seam, not live code (and 1.5.0 removed it).
 - Moved into this repository and updated for 1.5.1 on 9 October 2026: code claims were re-checked against 1.5.1, the claims about the original project against `brunsy/ha-watercare` at `ef7e258`, and the Python floor against Home Assistant's package metadata. Claims about Watercare's API and a real account keep their original date and could not be re-checked from this repository. Account and meter identifiers, and figures from real bills, were removed.
+- Updated for 1.6.0 on 2 November 2026: the claims about 1.6.0's changes (the bills and payments list, the service errors, the renamed sensors and the pricing checks) were checked against its code and tests. The other claims were not re-checked.
 - If a ✅ claim no longer matches the code, downgrade it to ⚠️ with the date rather than silently editing it, so drift stays visible.
 
 ## What these pages do not cover

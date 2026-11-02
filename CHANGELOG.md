@@ -7,7 +7,7 @@ Shows the amount of your latest Watercare bill, works out each bill's cost to th
 ### The amount of your latest bill
 
 - A new sensor, **Last bill amount**, shows the total of your newest bill as Watercare issued it, in NZD, from your Watercare billing history. Its attributes are the bill's date and the billing period it charges for. **Last bill cost** is still there: it is worked out from Watercare's published prices, while **Last bill amount** is the bill itself, so it can include charges and credits the calculation leaves out.
-- If your billing history cannot be read on an update, **Last bill amount** keeps the amount it had and everything else updates as usual.
+- If your billing history cannot be read on an update, everything else updates as usual and **Last bill amount** keeps the amount it had. After a restart of Home Assistant or a reload of Watercare, it shows as unknown until the billing history can be read again.
 - Diagnostics show whether the bill was read and its date, never its amount.
 
 ### Costs now match Watercare's bills to the cent
@@ -17,13 +17,13 @@ Shows the amount of your latest Watercare bill, works out each bill's cost to th
 
 ### Clearer messages and repair notices
 
-- When Watercare says it is down for maintenance, setup now says **Watercare is down for maintenance** instead of saying it cannot connect. If it happens once Watercare is set up, the sensors show as unavailable and the integration tries again by itself, as before. If Home Assistant starts while Watercare is down for maintenance, the same message appears where Home Assistant explains why Watercare is retrying its setup.
+- When Watercare's service says it is down for maintenance, setup now says **Watercare is down for maintenance** instead of saying it cannot connect. If it happens once Watercare is set up, the sensors show as unavailable and the integration tries again by itself, as before. If Home Assistant starts while Watercare is down for maintenance, the same message appears where Home Assistant explains why Watercare is retrying its setup. If Watercare's sign-in page is down instead, setup still says it cannot connect, because that page does not say why.
 - If Watercare answers that its app needs updating, which most likely means its service has changed, Home Assistant shows a repair notice, **Watercare asks for a newer version**, under **Settings → System → Repairs**, and setup says the same. Until the integration is updated to match, no new bills arrive and the sensors show as unavailable; water use already recorded is kept. The notice goes away by itself once Watercare answers normally again.
 - If Watercare says your property has a smart water meter, or that your meter was replaced with one, Home Assistant now shows a repair notice, **Watercare smart meters are not supported yet**, under **Settings → System → Repairs**. The integration can only read bills for manually read meters for now, so no new bills appear: the bills from your old meter still show, and if there are none, Watercare fails to set up and keeps retrying. Before, nothing explained why. The notice goes away by itself if Watercare reports a manually read meter again.
 
 ### Two sensors renamed
 
-- **Daily average** is now **Average daily usage**, and **Payment due** is now **Due date**, the names Watercare's app uses. An installation set up before this version keeps their entity IDs, `sensor.watercare_daily_average` and `sensor.watercare_payment_due`, so automations, scripts and dashboards that use them keep working; only the names shown change. A new installation gets `sensor.watercare_average_daily_usage` and `sensor.watercare_due_date`. The README's examples use the new IDs and say which to use on an older installation.
+- **Daily average** is now **Average daily usage**, and **Payment due** is now **Due date**, the names Watercare's app uses. On an installation set up before this version, the two sensors keep their entity IDs, `sensor.watercare_daily_average` and `sensor.watercare_payment_due`, so automations, scripts and dashboards that use them keep working; only the names shown change. A new installation gets `sensor.watercare_average_daily_usage` and `sensor.watercare_due_date`. The README's examples use the new IDs and say which to use on an older installation.
 
 ### Other changes
 

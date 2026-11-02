@@ -224,15 +224,19 @@ class IssuedBill:
 def parse_bills(payload: Any) -> tuple[IssuedBill, ...]:
     """Parse the bills in a transactions response, oldest first.
 
-    Payments and malformed items are skipped. A transaction's date is a UTC
-    timestamp; whether it is Auckland midnight of the bill's date, as the
-    billing periods' dates are, has not been seen, so it is read as the
-    Auckland date it falls on, which is the bill's date either way.
+    Payments and malformed items are skipped, and so is a date with no
+    Auckland date, such as a "9999-12-31T23:59:59Z" placeholder. A
+    transaction's date is a UTC timestamp; whether it is Auckland midnight of
+    the bill's date, as the billing periods' dates are, has not been seen, so
+    it is read as the Auckland date it falls on, which is the bill's date
+    either way. Bills are ordered by their timestamps, then their amounts, so
+    of two bills on the same date the newest is the same whatever order
+    Watercare lists them in.
     """
     items = payload.get("items") if isinstance(payload, dict) else None
     if not isinstance(items, list):
         raise WatercarePayloadError("Transactions payload has no list of items")
-    issued: list[IssuedBill] = []
+    issued: list[tuple[datetime, IssuedBill]] = []
     for item in items:
         if not isinstance(item, dict) or str(item.get("type")).lower() != "bill":
             continue
@@ -240,9 +244,13 @@ def parse_bills(payload: Any) -> tuple[IssuedBill, ...]:
         amount = _optional_number(item.get("amount"))
         if timestamp is None or amount is None:
             continue
-        issued.append(IssuedBill(local_date(timestamp), amount))
-    issued.sort(key=lambda bill: bill.date)
-    return tuple(issued)
+        try:
+            day = local_date(timestamp)
+        except OverflowError:
+            continue
+        issued.append((timestamp, IssuedBill(day, amount)))
+    issued.sort(key=lambda entry: (entry[0], entry[1].amount))
+    return tuple(bill for _, bill in issued)
 
 
 def bill_period(
