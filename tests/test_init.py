@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from logging import WARNING
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -195,16 +196,38 @@ async def test_unusable_billing_data_retries(
 
 
 async def test_skipped_and_duplicate_periods_are_tolerated(
-    ha: HomeAssistant, mock_api: dict[str, AsyncMock]
+    ha: HomeAssistant,
+    mock_api: dict[str, AsyncMock],
+    freezer: FrozenDateTimeFactory,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
+    freezer.move_to("2026-10-08T12:00:00+13:00")
     periods = default_periods()
-    mock_api["periods"].return_value = [*periods, periods[0], {"junk": True}]
+    tomorrow = api_period(date(2026, 9, 3), date(2026, 10, 9), 9000)
+    far_future = api_period(date(2026, 9, 3), date(2026, 10, 3), 9000)
+    far_future["billingPeriodToDate"] = "9999-12-31T00:00:00Z"
+    mock_api["periods"].return_value = [
+        *periods,
+        periods[0],
+        {"junk": True},
+        tomorrow,
+        far_future,
+    ]
     entry = make_entry()
     await _setup(ha, entry)
 
     data = entry.runtime_data.data
-    assert data.skipped_periods == 1
+    assert data.skipped_periods == 3
     assert data.duplicate_periods == 1
+    assert data.latest_period.end == date(2026, 9, 2)
+    # A period skipped on every poll must not fill the log.
+    assert not [
+        record
+        for record in caplog.records
+        if record.name.startswith("custom_components.watercare")
+        and record.levelno >= WARNING
+    ]
+    assert "Ignored 3 unusable and 1 duplicate billing periods" in caplog.text
 
 
 async def _add_legacy_consumption(hass: HomeAssistant, *days: date) -> None:

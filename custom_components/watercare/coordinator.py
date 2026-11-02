@@ -168,7 +168,9 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
         self._async_check_upgrade(required=False)
 
         try:
-            parsed = parse_billing_periods(payload)
+            parsed = parse_billing_periods(
+                payload, today=dt_util.now(NZ_TIMEZONE).date()
+            )
         except WatercarePayloadError as err:
             raise UpdateFailed(
                 translation_domain=DOMAIN, translation_key="unexpected_response"
@@ -178,8 +180,9 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
                 translation_domain=DOMAIN, translation_key="no_billing_periods"
             )
         if parsed.skipped or parsed.duplicates:
+            # Debug only: an unfinished period would be skipped on every poll.
             _LOGGER.debug(
-                "Ignored %d malformed and %d duplicate billing periods",
+                "Ignored %d unusable and %d duplicate billing periods",
                 parsed.skipped,
                 parsed.duplicates,
             )
