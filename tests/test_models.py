@@ -37,6 +37,9 @@ from .common import (
         ("2026-08-06T23:59:59", datetime(2026, 8, 6, 23, 59, 59, tzinfo=UTC)),
         ("2026-08-07T11:59:59+12:00", datetime(2026, 8, 6, 23, 59, 59, tzinfo=UTC)),
         ("not a date", None),
+        # Out of range in UTC: placeholders a day from either end of time.
+        ("0001-01-01T00:00:00+13:00", None),
+        ("9999-12-31T23:59:59-13:00", None),
         (None, None),
         (12, None),
     ],
@@ -153,10 +156,18 @@ def test_non_finite_statistics_and_balances_are_dropped() -> None:
 
 
 @pytest.mark.parametrize("key", ["billingPeriodFromDate", "billingPeriodToDate"])
-def test_a_date_with_no_auckland_date_skips_only_its_period(key: str) -> None:
-    # A "no date" placeholder is out of range once moved to Auckland time.
+@pytest.mark.parametrize(
+    "placeholder",
+    [
+        "9999-12-31T23:59:59Z",  # out of range in Auckland time
+        "0001-01-01T00:00:00+13:00",  # out of range in UTC
+    ],
+)
+def test_a_date_with_no_auckland_date_skips_only_its_period(
+    key: str, placeholder: str
+) -> None:
     item = api_period(date(2026, 6, 3), date(2026, 7, 3), 12000)
-    item[key] = "9999-12-31T23:59:59Z"
+    item[key] = placeholder
     assert BillingPeriod.from_json(item) is None
     parsed = parse_billing_periods(
         [item, api_period(date(2026, 7, 4), date(2026, 8, 3), 8000)]
@@ -299,8 +310,9 @@ def test_parse_bills_keeps_only_usable_bills_oldest_first() -> None:
         {"date": "2026-06-05T00:00:00Z", "type": "bill", "amount": "1.00"},
         {"date": "2026-06-06T00:00:00Z", "type": "bill", "amount": True},
         {"type": "bill", "amount": 1},
-        # A "no date" placeholder: out of range once moved to Auckland time.
+        # "No date" placeholders, out of range in Auckland time or in UTC.
         {"date": "9999-12-31T23:59:59Z", "type": "bill", "amount": 1},
+        {"date": "0001-01-01T00:00:00+13:00", "type": "bill", "amount": 1},
         "not an item",
     ]
     assert parse_bills({"items": items}) == (

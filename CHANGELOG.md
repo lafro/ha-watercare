@@ -6,7 +6,7 @@ Shows the amount of your latest Watercare bill, works out each bill's cost to th
 
 ### The amount of your latest bill
 
-- A new sensor, **Last bill amount**, shows the total of your newest bill as Watercare issued it, in NZD, from your Watercare billing history. Its attributes are the bill's date and the billing period it charges for. **Last bill cost** is still there: it is worked out from Watercare's published prices, while **Last bill amount** is the bill itself, so it can include charges and credits the calculation leaves out.
+- A new sensor, **Last bill amount**, shows the total of your newest bill as Watercare issued it, in NZD, from your Watercare billing history. Its attributes are the bill's date and the billing period it charges for. The period stays empty when none matches: until Watercare shows your water use for it, or for a bill dated more than a week after its period ended. **Last bill cost** is still there: it is worked out from Watercare's published prices, while **Last bill amount** is the bill itself, so it can include charges and credits the calculation leaves out.
 - If your billing history cannot be read on an update, everything else updates as usual and **Last bill amount** keeps the amount it had. After a restart of Home Assistant or a reload of Watercare, it shows as unknown until the billing history can be read again.
 - Diagnostics show whether the bill was read and its date, never its amount.
 

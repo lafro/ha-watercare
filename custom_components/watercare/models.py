@@ -29,7 +29,8 @@ def parse_timestamp(value: Any) -> datetime | None:
     """Parse a Watercare timestamp into an aware UTC datetime.
 
     Usage endpoints send milliseconds ("...T12:00:00.000Z"); the account
-    endpoint's due date does not ("...T23:59:59Z"). Accept both.
+    endpoint's due date does not ("...T23:59:59Z"). Accept both. A timestamp
+    with no UTC instant, such as "0001-01-01T00:00:00+13:00", is unparseable.
     """
     if not isinstance(value, str):
         return None
@@ -39,7 +40,10 @@ def parse_timestamp(value: Any) -> datetime | None:
         return None
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
+    try:
+        return parsed.astimezone(UTC)
+    except OverflowError:
+        return None
 
 
 def local_date(value: datetime) -> date:
