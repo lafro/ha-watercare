@@ -101,7 +101,7 @@ def test_versions_agree_and_have_no_prefix() -> None:
     assert manifest["version"] == project["project"]["version"]
     assert not manifest["version"].startswith("v")
     changelog = (ROOT / "CHANGELOG.md").read_text()
-    assert f"## {manifest['version']}" in changelog
+    assert f"## {check_versions.changelog_version(manifest['version'])}" in changelog
 
 
 def test_hacs_requires_a_minimum_home_assistant() -> None:
@@ -353,6 +353,52 @@ def test_check_versions_rejects_bad_versions(tmp_path: Path) -> None:
         check_versions.main([], tmp_path)
 
 
+def test_check_versions_reads_a_beta_from_its_release_section(tmp_path: Path) -> None:
+    changelog = _fake_root(tmp_path, "9.8.7b2")
+    changelog.write_text(
+        "# Changelog\n\n## 9.8.7\n\n### Fixed\n\n- New.\n\n## 9.8.6\n\n- Older.\n"
+    )
+    notes = tmp_path / "notes.md"
+
+    check_versions.main(["v9.8.7b2", "--release-notes", str(notes)], tmp_path)
+
+    text = notes.read_text()
+    assert text.startswith("Beta of 9.8.7 for testing.")
+    assert text.endswith("### Fixed\n\n- New.\n")
+    with pytest.raises(SystemExit, match="Tag mismatch"):
+        check_versions.main(["v9.8.7"], tmp_path)
+    with pytest.raises(SystemExit, match="Tag mismatch"):
+        check_versions.main(["v9.8.7b1"], tmp_path)
+    # A beta still needs its release's section.
+    changelog.write_text("# Changelog\n\n## 9.8.6\n\n- Older.\n")
+    with pytest.raises(SystemExit, match=r"no '## 9\.8\.7' section"):
+        check_versions.main([], tmp_path)
+    assert check_versions.changelog_version("9.8.7rc1") == "9.8.7rc1"
+    # Digits as release.yml reads them, [0-9]: Python's \d takes other scripts' too.
+    assert check_versions.changelog_version("9.8.7b\u0662") == "9.8.7b\u0662"
+
+
+def test_release_workflow_marks_only_beta_tags_as_pre_releases() -> None:
+    workflow = _workflow("release.yml")
+    tag_pattern = r"^v[0-9]+\.[0-9]+\.[0-9]+(b[0-9]+)?$"
+    versions = next(
+        step
+        for step in workflow["jobs"]["python"]["steps"]
+        if step.get("id") == "versions"
+    )
+    publish = workflow["jobs"]["release"]["steps"]
+    create_tag, release = publish[0], publish[-1]
+
+    assert tag_pattern in versions["run"]
+    assert tag_pattern in create_tag["run"]
+    assert "=~ b[0-9]+$ ]]" in release["run"]
+    assert "--prerelease --latest=false" in release["run"]
+    for tag in ("v1.6.0", "v1.6.0b1", "v10.20.30b4"):
+        assert re.fullmatch(tag_pattern.strip("^$"), tag)
+    for tag in ("v1.6.0rc1", "v1.6.0-b1", "1.6.0", "v1.6", "v1.6.0b"):
+        assert not re.fullmatch(tag_pattern.strip("^$"), tag)
+
+
 def test_check_versions_requires_the_release_repository(tmp_path: Path) -> None:
     changelog = _fake_root(tmp_path)
     changelog.write_text("# Changelog\n\n## 9.8.7\n\n- New.\n")
@@ -368,9 +414,10 @@ def test_repository_versions_and_changelog_agree(tmp_path: Path) -> None:
     check_versions.main(["--release-notes=" + str(notes)])
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())
     section = check_versions.changelog_section(
-        project["project"]["version"], (ROOT / "CHANGELOG.md").read_text()
+        check_versions.changelog_version(project["project"]["version"]),
+        (ROOT / "CHANGELOG.md").read_text(),
     )
-    assert notes.read_text() == section
+    assert notes.read_text().endswith(section)
     assert section.strip()
     # The release only goes out from the repository the manifest names.
     check_versions.main(["--repository", "lafro/ha-watercare"])
