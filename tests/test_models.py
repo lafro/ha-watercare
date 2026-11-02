@@ -176,22 +176,23 @@ def test_a_date_with_no_auckland_date_skips_only_its_period(
     assert [period.end for period in parsed.periods] == [date(2026, 8, 3)]
 
 
-def test_periods_ending_after_today_are_skipped() -> None:
+def test_periods_ending_today_or_later_are_skipped() -> None:
     today = date(2026, 10, 8)
     far_future = api_period(date(2026, 9, 3), date(2026, 10, 3), 9000)
     far_future["billingPeriodToDate"] = "9999-12-31T00:00:00Z"
     payload = [
         api_period(date(2026, 8, 4), date(2026, 9, 2), 13000),
-        api_period(date(2026, 9, 3), date(2026, 10, 8), 9000),  # ends today
+        api_period(date(2026, 9, 3), date(2026, 10, 7), 9000),  # ends yesterday
+        api_period(date(2026, 10, 8), date(2026, 10, 8), 100),  # ends today
         api_period(date(2026, 10, 9), date(2026, 10, 9), 100),  # ends tomorrow
         far_future,
     ]
     parsed = parse_billing_periods(payload, today=today)
     assert [period.end for period in parsed.periods] == [
         date(2026, 9, 2),
-        date(2026, 10, 8),
+        date(2026, 10, 7),
     ]
-    assert parsed.skipped == 2
+    assert parsed.skipped == 3
     # Without a today, as in the tests of other parts, nothing is cut.
     assert parse_billing_periods(payload).skipped == 0
 

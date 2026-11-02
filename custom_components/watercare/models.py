@@ -129,9 +129,11 @@ def parse_billing_periods(payload: Any, *, today: date | None = None) -> ParsedP
 
     Duplicate periods (same start and end) are kept once, so a repeated item
     can never be counted twice. With ``today`` (an Auckland date), a period
-    that ends after it is skipped: the endpoint only returns completed
-    periods, so such an end is a placeholder or an unfinished period, and
-    its usage would be spread over days that have not happened.
+    that ends on or after it is skipped. The endpoint only returns completed
+    periods, so a later end is a placeholder or an unfinished period, whose
+    usage would be spread over days that have not happened. An unfinished
+    period would end today, and once stored its partial usage would stay in
+    the history, which only appends; a period read today loads tomorrow.
     """
     if not isinstance(payload, list):
         raise WatercarePayloadError("Billing periods payload is not a list")
@@ -141,7 +143,7 @@ def parse_billing_periods(payload: Any, *, today: date | None = None) -> ParsedP
     duplicates = 0
     for item in payload:
         period = BillingPeriod.from_json(item)
-        if period is None or (today is not None and period.end > today):
+        if period is None or (today is not None and period.end >= today):
             skipped += 1
             continue
         key = (period.start, period.end)

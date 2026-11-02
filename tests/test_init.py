@@ -203,14 +203,14 @@ async def test_skipped_and_duplicate_periods_are_tolerated(
 ) -> None:
     freezer.move_to("2026-10-08T12:00:00+13:00")
     periods = default_periods()
-    tomorrow = api_period(date(2026, 9, 3), date(2026, 10, 9), 9000)
+    ends_today = api_period(date(2026, 9, 3), date(2026, 10, 8), 9000)
     far_future = api_period(date(2026, 9, 3), date(2026, 10, 3), 9000)
     far_future["billingPeriodToDate"] = "9999-12-31T00:00:00Z"
     mock_api["periods"].return_value = [
         *periods,
         periods[0],
         {"junk": True},
-        tomorrow,
+        ends_today,
         far_future,
     ]
     entry = make_entry()
@@ -228,6 +228,37 @@ async def test_skipped_and_duplicate_periods_are_tolerated(
         and record.levelno >= WARNING
     ]
     assert "Ignored 3 unusable and 1 duplicate billing periods" in caplog.text
+
+
+async def test_a_bill_dated_today_gets_its_period_the_next_day(
+    ha: HomeAssistant,
+    mock_api: dict[str, AsyncMock],
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    # The period read today is skipped until tomorrow, so its bill, dated
+    # today, shows its amount without a period until then.
+    freezer.move_to("2026-10-08T12:00:00+13:00")
+    mock_api["periods"].return_value = [
+        *default_periods(),
+        api_period(date(2026, 9, 3), date(2026, 10, 8), 9000),
+    ]
+    mock_api["transactions"].return_value = {
+        "items": [api_transaction(date(2026, 10, 8), 87.65)]
+    }
+    entry = make_entry()
+    await _setup(ha, entry)
+    amount = ha.states.get("sensor.watercare_last_bill_amount")
+    assert amount.state == "87.65"
+    assert amount.attributes["bill_date"] == "2026-10-08"
+    assert amount.attributes["billing_period_end"] is None
+    assert entry.runtime_data.data.latest_period.end == date(2026, 9, 2)
+
+    freezer.move_to("2026-10-09T00:30:00+13:00")
+    await _refresh(ha, entry.runtime_data)
+    amount = ha.states.get("sensor.watercare_last_bill_amount")
+    assert amount.attributes["billing_period_start"] == "2026-09-03"
+    assert amount.attributes["billing_period_end"] == "2026-10-08"
+    assert entry.runtime_data.data.latest_period.end == date(2026, 10, 8)
 
 
 async def _add_legacy_consumption(hass: HomeAssistant, *days: date) -> None:
