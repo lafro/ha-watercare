@@ -21,6 +21,7 @@ from custom_components.watercare.api import (
     WatercareApi,
     WatercareAuthError,
     WatercareConnectionError,
+    WatercareMaintenanceError,
 )
 from custom_components.watercare.models import parse_billing_periods
 
@@ -103,6 +104,7 @@ def test_a_scenario_round_trips_and_keeps_defaults() -> None:
         password="another-synthetic-password",
         generation=3,
         api_status=503,
+        api_error="service_maintenance",
         withheld=2,
         as_of=_TODAY,
     )
@@ -196,6 +198,9 @@ async def test_the_scenario_is_read_on_each_request(
         _scenario(folder, Scenario(api_status=503))
         api = _client(session)
         with pytest.raises(WatercareConnectionError, match="503"):
+            await api.async_get_account()
+        _scenario(folder, Scenario(api_error="service_maintenance"))
+        with pytest.raises(WatercareMaintenanceError):
             await api.async_get_account()
         _scenario(folder, Scenario())
         await api.async_get_account()

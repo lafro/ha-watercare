@@ -13,7 +13,7 @@ Based on the MIT-licensed [brunsy/ha-watercare](https://github.com/brunsy/ha-wat
 
 - Water use for the Energy dashboard's **Water** view, one value per day: each bill is spread evenly over the days it covers.
 - Water cost for each day at the prices Watercare charged: each bill at the prices in force when its billing period started, spread over its days. Watercare's published residential prices for every financial year since 2018/19 are built in ([sources](docs/tariffs.md)).
-- Sensors for the last bill (usage, cost, daily average, reading type, efficiency band) and the account (balance, amount due, payment due date, meter number).
+- Sensors for the last bill (usage, calculated cost, the amount Watercare billed, average daily usage, reading type, efficiency band) and the account (balance, amount due, due date, meter number).
 - A repair notice each July if the integration does not yet know the new year's prices.
 - A repair notice if Watercare reports a smart meter, which the integration cannot read yet.
 - Re-authentication, reconfiguration and privacy-safe diagnostics.
@@ -72,17 +72,20 @@ One service device, **Watercare**, represents the account.
 | Entity | Meaning |
 |---|---|
 | Last bill usage | Litres used in the most recent billing period. Mechanical meters are billed in whole kilolitres. |
-| Last bill cost | Cost of that period at the prices in force when it started, as Watercare charges it. Unknown while a price is missing. |
-| Daily average | Watercare's average daily use for that period. |
+| Last bill cost | Cost of that period calculated at the prices in force when it started, as Watercare charges it. Unknown while a price is missing. |
+| Last bill amount | The total of the newest bill in Watercare's billing history, as Watercare issued it. Its attributes are the bill's date and the billing period it charges for. |
+| Average daily usage | Watercare's average daily use for that period. |
 | Last billing period end | When the most recent billing period ended (diagnostic). |
-| Payment due | When payment is due (diagnostic). |
+| Due date | When payment is due (diagnostic). |
 | Reading type | Estimate or Actual (diagnostic). |
 | Household efficiency band | Watercare's usage band for the household (diagnostic). |
 | Account balance, Amount due | From the account (diagnostic). |
 | Overdue amount | From the account (diagnostic, disabled by default). |
 | Meter number | The meter on the account (diagnostic). |
 
-Watercare publishes only completed billing periods, so these describe the last issued bill, not use accruing now. The usage and cost sensors have no state class; the Energy dashboard uses the statistics below.
+Watercare publishes only completed billing periods, so these describe the last issued bill, not use accruing now. The usage, cost and amount sensors have no state class; the Energy dashboard uses the statistics below.
+
+**Average daily usage** and **Due date** were called **Daily average** and **Payment due** before 1.6.0, to match Watercare's app. An installation set up before 1.6.0 keeps their entity IDs, `sensor.watercare_daily_average` and `sensor.watercare_payment_due`; a new one gets `sensor.watercare_average_daily_usage` and `sensor.watercare_due_date`.
 
 ## Energy dashboard
 
@@ -104,7 +107,7 @@ How the numbers are built (details in [docs/statistics.md](docs/statistics.md)):
 - Each bill is priced at the prices in force when its billing period started, as Watercare charges it, so a bill that spans 1 July keeps the earlier year's prices. Its cost is spread over its days like its volume.
 - A poll only adds days after the stored history and never rewrites it.
 
-Comparing with Watercare's app: its yearly view shows calendar years, January to December, as the Energy dashboard's year view does. Watercare's financial year, from 1 July, only decides the prices. The app's monthly view shows one bar per bill, from one meter reading to the next, so its months are not calendar months.
+Comparing with Watercare's app: its yearly view shows calendar years, January to December, as the Energy dashboard's year view does. Watercare's financial year, from 1 July, only decides the prices. The app's monthly view shows one bar per bill, from one meter reading to the next, so its months are not calendar months. The app's billing history lists bills and payments going back years (about seven on the account checked); **Last bill amount** shows the newest bill in it.
 
 ## Data updates
 
@@ -144,10 +147,10 @@ automation:
         data:
           message: >
             New water bill: {{ states('sensor.watercare_last_bill_usage') | int // 1000 }} kL,
-            NZD {{ states('sensor.watercare_last_bill_cost') }}.
+            NZD {{ states('sensor.watercare_last_bill_amount') }}.
 ```
 
-Remind three days before payment is due:
+Remind three days before payment is due (on an installation set up before 1.6.0, the due date is `sensor.watercare_payment_due`):
 
 ```yaml
 automation:
@@ -159,7 +162,7 @@ automation:
       - condition: template
         value_template: >
           {{ states('sensor.watercare_amount_due') | float(0) > 0 and
-             (as_datetime(states('sensor.watercare_payment_due')) - now()).days == 3 }}
+             (as_datetime(states('sensor.watercare_due_date')) - now()).days == 3 }}
     actions:
       - action: notify.notify
         data:
@@ -177,13 +180,16 @@ automation:
 - One Watercare account per Home Assistant instance.
 - Mechanical meters only. Smart-meter data uses different endpoints whose formats have not been verified; support needs a real sample first. If Watercare reports a smart meter, or that the meter was replaced with one, a repair notice, **Watercare smart meters are not supported yet**, says so. Bills from the old meter still load, but no new ones appear, and Watercare fails to set up if it has no bills from an old meter. The notice goes away by itself once Watercare reports a manually read meter.
 - Daily values are an even split of each bill, not measured daily use. A mechanical meter is read about monthly in whole kilolitres.
-- Costs are calculated from published residential prices. Watercare's account history does list the amount of each bill and payment, but the integration does not read it yet. Infrastructure growth charges, trade waste, late fees and credits are not included. Business accounts use different prices and are not supported.
+- The cost statistics and **Last bill cost** are calculated from published residential prices, so they leave out infrastructure growth charges, trade waste, late fees and credits. **Last bill amount** is the newest bill's total as Watercare issued it, so it can include charges and credits the calculation leaves out. Business accounts use different prices and are not supported.
+- Watercare's billing history names no billing period, so **Last bill amount** takes the period that ended on the bill's date or up to a week before it. If none did, as when the bill is listed before its period is, its period attributes stay empty until Watercare lists that period.
 - A bill that spans 1 July is charged at the prices of the year it starts in. This matched every such bill checked so far to the cent (a split by day was about 3.7% too high on the first one); if one of your bills shows otherwise, please open an issue.
 - History before 1 July 2018 is priced at the 2018/19 prices, the earliest year in the table.
 
 ## Troubleshooting
 
-- **Setup says it cannot connect:** Watercare may be down for maintenance. Try again later.
+- **Setup says Watercare is down for maintenance:** Watercare says its service is down for maintenance. Try again later. Once Watercare is set up, a maintenance outage shows the same message and the integration retries by itself.
+- **Setup says it cannot connect:** Watercare's service did not answer, or answered with an error. Try again later.
+- **A "Watercare asks for a newer version" repair notice:** Watercare answered that its app needs updating, which most likely means its service has changed. Check HACS for an update to Watercare; if there is none yet, please open an issue. The notice goes away by itself once Watercare answers normally again.
 - **Re-authentication requested:** Watercare rejected the stored password. Enter the current one.
 - **Costs stopped after 1 July:** the integration does not know the new year's prices yet. Fix the repair notice or update the integration.
 - **A "smart meters are not supported yet" repair notice:** Watercare reports a smart meter at the property. See [Known limitations](#known-limitations).

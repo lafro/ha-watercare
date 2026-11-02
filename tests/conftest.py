@@ -24,7 +24,7 @@ from syrupy.assertion import SnapshotAssertion
 from custom_components.watercare.api import WatercareApi
 from custom_components.watercare.models import AccountSummary
 
-from .common import ACCOUNT_PAYLOAD, default_periods
+from .common import ACCOUNT_PAYLOAD, default_periods, default_transactions
 
 # ha_deprecations fails the run on any deprecation Home Assistant reports for
 # this integration; see that module.
@@ -74,5 +74,15 @@ def mock_api() -> Generator[dict[str, AsyncMock]]:
             autospec=True,
             return_value=default_periods(),
         ) as get_periods,
+        patch.object(
+            WatercareApi,
+            "async_get_transactions",
+            autospec=True,
+            return_value=default_transactions(),
+        ) as get_transactions,
     ):
-        yield {"account": get_account, "periods": get_periods}
+        yield {
+            "account": get_account,
+            "periods": get_periods,
+            "transactions": get_transactions,
+        }

@@ -30,6 +30,8 @@ from custom_components.watercare import async_migrate_entry
 from custom_components.watercare.api import (
     WatercareAuthError,
     WatercareConnectionError,
+    WatercareMaintenanceError,
+    WatercareUpgradeRequiredError,
     _default_sign_in_session,
 )
 from custom_components.watercare.const import (
@@ -51,6 +53,7 @@ from .common import (
     PASSWORD,
     add_legacy_statistics,
     api_period,
+    api_transaction,
     default_periods,
     make_entry,
     stored_rows,
@@ -476,6 +479,109 @@ async def test_no_smart_meter_issue_for_a_mechanical_meter(
     assert ir.async_get(ha).async_get_issue(DOMAIN, issue_id) is None
 
 
+async def test_maintenance_is_named_in_setup_and_updates(
+    ha: HomeAssistant, mock_api: dict[str, AsyncMock]
+) -> None:
+    mock_api["account"].side_effect = WatercareMaintenanceError("maintenance")
+    entry = make_entry()
+    await _setup(ha, entry)
+
+    assert entry.state is ConfigEntryState.SETUP_RETRY
+    assert "Watercare is down for maintenance" in str(entry.reason)
+
+    _use_account(mock_api)
+    await _reload(ha, entry)
+    assert entry.state is ConfigEntryState.LOADED
+    coordinator = entry.runtime_data
+    mock_api["periods"].side_effect = WatercareMaintenanceError("maintenance")
+    await _refresh(ha, coordinator)
+
+    assert not coordinator.last_update_success
+    assert coordinator.last_exception.translation_key == "service_maintenance"
+    # Not a sign-in problem, and no notice: it passes by itself.
+    assert not ha.config_entries.flow.async_progress()
+    assert not [
+        issue
+        for (domain, _issue_id), issue in ir.async_get(ha).issues.items()
+        if domain == DOMAIN
+    ]
+
+
+async def test_upgrade_required_raises_a_notice_until_watercare_answers(
+    ha: HomeAssistant, mock_api: dict[str, AsyncMock]
+) -> None:
+    mock_api["account"].side_effect = WatercareUpgradeRequiredError("upgrade")
+    entry = make_entry()
+    await _setup(ha, entry)
+
+    assert entry.state is ConfigEntryState.SETUP_RETRY
+    issue_id = f"upgrade_required_{entry.entry_id}"
+    issue = ir.async_get(ha).async_get_issue(DOMAIN, issue_id)
+    assert issue is not None
+    assert not issue.is_fixable
+    assert issue.severity is ir.IssueSeverity.ERROR
+    assert issue.translation_key == "upgrade_required"
+
+    _use_account(mock_api)
+    await _reload(ha, entry)
+
+    assert entry.state is ConfigEntryState.LOADED
+    assert ir.async_get(ha).async_get_issue(DOMAIN, issue_id) is None
+
+    mock_api["periods"].side_effect = WatercareUpgradeRequiredError("upgrade")
+    await _refresh(ha, entry.runtime_data)
+    assert entry.runtime_data.last_exception.translation_key == "upgrade_required"
+    assert ir.async_get(ha).async_get_issue(DOMAIN, issue_id) is not None
+
+
+async def test_the_last_bill_amount_survives_a_failed_read(
+    ha: HomeAssistant, mock_api: dict[str, AsyncMock]
+) -> None:
+    mock_api["transactions"].side_effect = WatercareConnectionError("down")
+    entry = make_entry()
+    await _setup(ha, entry)
+
+    # The poll never fails for the amounts, even at setup.
+    assert entry.state is ConfigEntryState.LOADED
+    coordinator = entry.runtime_data
+    assert coordinator.data.last_bill is None
+    assert coordinator.data.last_bill_fetch_failed
+    assert ha.states.get("sensor.watercare_last_bill_amount").state == "unknown"
+
+    mock_api["transactions"].side_effect = None
+    await _refresh(ha, coordinator)
+    assert ha.states.get("sensor.watercare_last_bill_amount").state == "98.76"
+    assert not coordinator.data.last_bill_fetch_failed
+
+    for failure in (
+        {"side_effect": WatercareAuthError("refused")},
+        {"side_effect": None, "return_value": {"unexpected": True}},
+    ):
+        for name, value in failure.items():
+            setattr(mock_api["transactions"], name, value)
+        await _refresh(ha, coordinator)
+        assert coordinator.last_update_success
+        assert coordinator.data.last_bill_fetch_failed
+        amount = ha.states.get("sensor.watercare_last_bill_amount")
+        assert amount.state == "98.76"
+        assert amount.attributes["billing_period_end"] == "2026-09-02"
+
+    # A newer bill, before its period is in the bills: no period matches yet.
+    mock_api["transactions"].return_value = {
+        "items": [api_transaction(date(2026, 10, 6), 87.65)]
+    }
+    await _refresh(ha, coordinator)
+    amount = ha.states.get("sensor.watercare_last_bill_amount")
+    assert amount.state == "87.65"
+    assert amount.attributes["bill_date"] == "2026-10-06"
+    assert amount.attributes["billing_period_end"] is None
+
+    # An account with no bills yet.
+    mock_api["transactions"].return_value = {"items": []}
+    await _refresh(ha, coordinator)
+    assert ha.states.get("sensor.watercare_last_bill_amount").state == "unknown"
+
+
 async def test_removing_the_entry_removes_its_issues(
     ha: HomeAssistant,
     mock_api: dict[str, AsyncMock],
@@ -485,9 +591,12 @@ async def test_removing_the_entry_removes_its_issues(
     _use_account(mock_api, meterType="smartmeter-single")
     entry = make_entry()
     await _setup(ha, entry)
+    mock_api["periods"].side_effect = WatercareUpgradeRequiredError("upgrade")
+    await _refresh(ha, entry.runtime_data)
     issues = ir.async_get(ha)
     issue_ids = [
-        f"{issue}_{entry.entry_id}" for issue in ("tariff_missing", "smart_meter")
+        f"{issue}_{entry.entry_id}"
+        for issue in ("tariff_missing", "smart_meter", "upgrade_required")
     ]
     assert all(issues.async_get_issue(DOMAIN, issue_id) for issue_id in issue_ids)
 

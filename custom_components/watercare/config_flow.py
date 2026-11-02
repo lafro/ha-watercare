@@ -26,7 +26,13 @@ from homeassistant.helpers.selector import (
 )
 from homeassistant.util import dt as dt_util
 
-from .api import WatercareApi, WatercareAuthError, WatercareConnectionError
+from .api import (
+    WatercareApi,
+    WatercareAuthError,
+    WatercareConnectionError,
+    WatercareMaintenanceError,
+    WatercareUpgradeRequiredError,
+)
 from .const import (
     CONF_FIXED_CHARGE,
     CONF_REFRESH_TOKEN,
@@ -120,6 +126,10 @@ class WatercareConfigFlow(ConfigFlow, domain=DOMAIN):
             return await async_validate_login(self.hass, email, password)
         except WatercareAuthError:
             errors["base"] = "invalid_auth"
+        except WatercareMaintenanceError:
+            errors["base"] = "service_maintenance"
+        except WatercareUpgradeRequiredError:
+            errors["base"] = "upgrade_required"
         except WatercareConnectionError:
             errors["base"] = "cannot_connect"
         except Exception:

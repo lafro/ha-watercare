@@ -10,13 +10,23 @@ import pytest
 from custom_components.watercare.models import (
     AccountSummary,
     BillingPeriod,
+    IssuedBill,
     WatercarePayloadError,
+    bill_period,
     local_date,
     parse_billing_periods,
+    parse_bills,
     parse_timestamp,
 )
 
-from .common import ACCOUNT_NUMBER, ACCOUNT_PAYLOAD, METER_NUMBER, api_period
+from .common import (
+    ACCOUNT_NUMBER,
+    ACCOUNT_PAYLOAD,
+    METER_NUMBER,
+    api_period,
+    api_transaction,
+    default_periods,
+)
 
 
 @pytest.mark.parametrize(
@@ -235,3 +245,75 @@ def test_account_summary_partial_record() -> None:
 )
 def test_account_summary_rejects_unusable_payloads(payload: object) -> None:
     assert AccountSummary.from_json(payload) is None
+
+
+# A transaction's date is a UTC timestamp. Whether it is Auckland midnight of
+# the bill's date, as the billing periods' dates are, or UTC midnight of it,
+# has not been seen: both read as the same Auckland date.
+@pytest.mark.parametrize(
+    "stamp",
+    [
+        "2026-09-03T12:00:00.000Z",  # Auckland midnight of 4 September (NZST)
+        "2026-09-04T00:00:00.000Z",  # UTC midnight of 4 September
+        "2026-09-04T00:00:00Z",
+    ],
+)
+def test_a_bills_date_is_its_auckland_date_in_either_form(stamp: str) -> None:
+    item = {"date": stamp, "type": "bill", "amount": 98.76, "balance": 98.76}
+    (bill,) = parse_bills({"items": [item]})
+    assert bill == IssuedBill(date(2026, 9, 4), 98.76)
+    parsed = parse_billing_periods(default_periods())
+    period = bill_period(bill, parsed.periods)
+    assert period is not None
+    assert (period.start, period.end) == (date(2026, 8, 4), date(2026, 9, 2))
+
+
+def test_daylight_saving_dates_read_as_the_same_day() -> None:
+    # In January, Auckland midnight is 11:00 UTC the day before.
+    for stamp in ("2027-01-04T11:00:00.000Z", "2027-01-05T00:00:00.000Z"):
+        (bill,) = parse_bills({"items": [{"date": stamp, "type": "bill", "amount": 1}]})
+        assert bill.date == date(2027, 1, 5)
+
+
+def test_parse_bills_keeps_only_usable_bills_oldest_first() -> None:
+    items = [
+        api_transaction(date(2026, 9, 4), 98.76, balance=98.76),
+        api_transaction(date(2026, 8, 19), 76.54, kind="payment"),
+        {"date": "2026-08-10T00:00:00Z", "type": "Bill", "amount": 12},
+        api_transaction(date(2026, 7, 5), 102.34, balance=102.34),
+        {"date": "not a date", "type": "bill", "amount": 1},
+        {"date": "2026-06-05T00:00:00Z", "type": "bill", "amount": "1.00"},
+        {"date": "2026-06-06T00:00:00Z", "type": "bill", "amount": True},
+        {"type": "bill", "amount": 1},
+        "not an item",
+    ]
+    assert parse_bills({"items": items}) == (
+        IssuedBill(date(2026, 7, 5), 102.34),
+        IssuedBill(date(2026, 8, 10), 12),
+        IssuedBill(date(2026, 9, 4), 98.76),
+    )
+    assert parse_bills({"items": []}) == ()
+
+
+@pytest.mark.parametrize("payload", [None, [], {}, {"items": None}, {"items": {}}])
+def test_parse_bills_rejects_other_shapes(payload: object) -> None:
+    with pytest.raises(WatercarePayloadError):
+        parse_bills(payload)
+
+
+@pytest.mark.parametrize(
+    ("issued", "end"),
+    [
+        (date(2026, 9, 2), date(2026, 9, 2)),  # on the period's last day
+        (date(2026, 9, 9), date(2026, 9, 2)),  # a week after it
+        (date(2026, 9, 10), None),  # more than a week after any period
+        (date(2026, 8, 5), date(2026, 8, 3)),  # an older bill, its own period
+        (date(2026, 9, 1), None),  # before the newest period ended
+    ],
+)
+def test_a_bill_matches_the_period_that_ended_up_to_a_week_before(
+    issued: date, end: date | None
+) -> None:
+    periods = parse_billing_periods(default_periods()).periods
+    period = bill_period(IssuedBill(issued, 1.0), periods)
+    assert (period.end if period else None) == end

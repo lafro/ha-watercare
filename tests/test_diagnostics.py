@@ -42,6 +42,9 @@ async def test_diagnostics_hold_no_identifiers(
         assert secret not in text
     assert "13000" not in text
     assert "123.45" not in text
+    # No bill amount, of the newest bill or any other.
+    for amount in ("98.76", "76.54", "102.34"):
+        assert amount not in text
     assert result == snapshot
 
 

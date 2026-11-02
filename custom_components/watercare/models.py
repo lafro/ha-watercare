@@ -10,12 +10,15 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
-from typing import Any
+from datetime import UTC, date, datetime, timedelta
+from typing import Any, Final
 
 from .const import NZ_TIMEZONE
 
 _CHANGED_TO_SMART = "transitionedMeterFromMMToSM"
+# A bill is issued on, or a few days after, the last day of its billing
+# period. A week leaves room without reaching back to the period before.
+BILL_ISSUE_DAYS: Final = timedelta(days=7)
 
 
 class WatercarePayloadError(ValueError):
@@ -208,6 +211,54 @@ class AccountSummary:
             meter_number=meter_number,
             meter_changed_to_smart=changed_to_smart,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class IssuedBill:
+    """One bill from the account's transactions: the amount Watercare charged."""
+
+    date: date
+    amount: float
+
+
+def parse_bills(payload: Any) -> tuple[IssuedBill, ...]:
+    """Parse the bills in a transactions response, oldest first.
+
+    Payments and malformed items are skipped. A transaction's date is a UTC
+    timestamp; whether it is Auckland midnight of the bill's date, as the
+    billing periods' dates are, has not been seen, so it is read as the
+    Auckland date it falls on, which is the bill's date either way.
+    """
+    items = payload.get("items") if isinstance(payload, dict) else None
+    if not isinstance(items, list):
+        raise WatercarePayloadError("Transactions payload has no list of items")
+    issued: list[IssuedBill] = []
+    for item in items:
+        if not isinstance(item, dict) or str(item.get("type")).lower() != "bill":
+            continue
+        timestamp = parse_timestamp(item.get("date"))
+        amount = _optional_number(item.get("amount"))
+        if timestamp is None or amount is None:
+            continue
+        issued.append(IssuedBill(local_date(timestamp), amount))
+    issued.sort(key=lambda bill: bill.date)
+    return tuple(issued)
+
+
+def bill_period(
+    bill: IssuedBill, periods: tuple[BillingPeriod, ...]
+) -> BillingPeriod | None:
+    """Return the billing period a bill charges for, or None.
+
+    The transactions name no period, so a bill matches the latest period that
+    ends on its date or up to ``BILL_ISSUE_DAYS`` before it.
+    """
+    matches = [
+        period
+        for period in periods
+        if period.end <= bill.date <= period.end + BILL_ISSUE_DAYS
+    ]
+    return max(matches, key=lambda period: period.end, default=None)
 
 
 def _usage_litres(value: Any) -> int | None:

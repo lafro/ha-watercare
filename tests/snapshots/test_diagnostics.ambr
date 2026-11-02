@@ -19,6 +19,12 @@
       'account_present': True,
       'billing_periods': 3,
       'duplicate_periods': 0,
+      'last_bill': dict({
+        'available': True,
+        'date': '2026-09-04',
+        'fetch_failed': False,
+        'matched_period': True,
+      }),
       'last_exception_type': None,
       'last_import': dict({
         'consumption_rows': 92,

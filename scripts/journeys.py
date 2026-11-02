@@ -74,8 +74,10 @@ from scripts import live_ha  # noqa: E402
 from tests import watercare_standin as standin  # noqa: E402
 from tests.watercare_http import (  # noqa: E402
     ACCOUNT_NUMBER,
+    ISSUE_DAYS,
     SECOND_ACCOUNT_NUMBER,
     Bill,
+    bill_amount,
     bills,
 )
 from tests.watercare_standin import Scenario  # noqa: E402
@@ -1064,6 +1066,9 @@ class Journey:
             + (f"; unavailable: {', '.join(unavailable)}" if unavailable else ""),
         )
         self.check_newest_bill(entry_id, states, imports[-1])
+        self.check_bill_amount(
+            entities.get(f"{entry_id}_last_bill_amount"), imports[-1]
+        )
         expected = expected_statistics(imports)
         rows = self.wait_rows(expected)
         for kind, statistic_id in STATISTICS.items():
@@ -1103,6 +1108,33 @@ class Journey:
             _number(usage) == float(bill.litres) and ok_cost,
             f"usage {usage} (bill {bill.litres} L), cost {cost} "
             f"(expected {'unknown' if want_cost is None else f'{want_cost:.2f}'})",
+        )
+
+    def check_bill_amount(self, entity_id: str | None, latest: Import) -> None:
+        """Check the last bill amount: the newest bill's, dated, with its period."""
+        bill = latest.bills[-1]
+        state: dict[str, Any] = (
+            {}
+            if entity_id is None
+            else self.client.rest("GET", f"/api/states/{entity_id}") or {}
+        )
+        attributes = state.get("attributes") or {}
+        shown = {
+            "amount": _number(state.get("state")),
+            "bill_date": attributes.get("bill_date"),
+            "billing_period_start": attributes.get("billing_period_start"),
+            "billing_period_end": attributes.get("billing_period_end"),
+        }
+        wanted = {
+            "amount": bill_amount(bill),
+            "bill_date": (bill.end + timedelta(days=ISSUE_DAYS)).isoformat(),
+            "billing_period_start": bill.start.isoformat(),
+            "billing_period_end": bill.end.isoformat(),
+        }
+        self.check(
+            "the last bill amount is the newest bill's, with its date and period",
+            shown == wanted,
+            f"{shown} (expected {wanted})",
         )
 
     def check_notices(self, entry_id: str, imports: Sequence[Import]) -> None:
@@ -1290,10 +1322,19 @@ def wrong_password(j: Journey) -> None:
 
 
 def watercare_down(j: Journey) -> None:
-    """Watercare down at setup, then back."""
-    j.scenario(j.watercare(api_status=503))
+    """Watercare down for maintenance at setup, then down, then back."""
+    j.scenario(j.watercare(api_error="service_maintenance"))
     first = j.start_flow({})
     flow_id = str(first["flow_id"])
+    maintenance = j.submit(flow_id, {"username": EMAIL, "password": PASSWORD})
+    j.check(
+        "the form says Watercare is down for maintenance",
+        maintenance.get("step_id") == "user"
+        and base_error(maintenance) == "service_maintenance"
+        and "down for maintenance" in str(j.result.screens[-1].error),
+        j.result.screens[-1].error,
+    )
+    j.scenario(j.watercare(api_status=503))
     began = datetime.now(UTC)
     down = j.submit(flow_id, {"username": EMAIL, "password": PASSWORD})
     j.check(
@@ -1560,7 +1601,7 @@ def restart(j: Journey, relaunch: Callable[[], None]) -> None:
 JOURNEYS: dict[str, str] = {
     "first_setup": "First setup: email and password, entry, history imported",
     "wrong_password": "Wrong password, then the right one",
-    "watercare_down": "Watercare down at setup, then back",
+    "watercare_down": "Watercare down for maintenance, then down, at setup; then back",
     "reauth": "Watercare no longer takes the stored login: sign in again",
     "reconfigure": "Reconfigure: new email, same account; another account refused",
     "options": "Options: wastewater ratio and this year's prices",

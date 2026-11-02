@@ -39,6 +39,8 @@
     "error": {
       "invalid_auth": "Watercare rejected the email or password.",
       "cannot_connect": "Could not connect to Watercare. Try again shortly.",
+      "service_maintenance": "Watercare is down for maintenance. Try again later.",
+      "upgrade_required": "Watercare asks for a newer version of its app, so this version of the integration may no longer work with it. Check HACS for an update to Watercare.",
       "unknown": "Unexpected error. Check the Home Assistant log for details."
     },
     "abort": {
@@ -95,14 +97,17 @@
       "last_bill_cost": {
         "name": "Last bill cost"
       },
+      "last_bill_amount": {
+        "name": "Last bill amount"
+      },
       "daily_average": {
-        "name": "Daily average"
+        "name": "Average daily usage"
       },
       "billing_period_end": {
         "name": "Last billing period end"
       },
       "payment_due_date": {
-        "name": "Payment due"
+        "name": "Due date"
       },
       "reading_type": {
         "name": "Reading type"
@@ -130,6 +135,12 @@
     },
     "cannot_connect": {
       "message": "Could not get data from Watercare: {error}"
+    },
+    "service_maintenance": {
+      "message": "Watercare is down for maintenance."
+    },
+    "upgrade_required": {
+      "message": "Watercare asks for a newer version of its app."
     },
     "unexpected_response": {
       "message": "Watercare returned billing data in an unexpected format."
@@ -173,6 +184,10 @@
     "statistics_rebuild_skipped": {
       "title": "Watercare statistics were not rebuilt",
       "description": "Version 1.5.0 records water use as daily rows, each bill priced at the tariff in force when it started. It did not rebuild the stored Watercare statistics because they reach back further than the bills Watercare now returns, and a rebuild would lose that history. New days are added after the stored history. See the statistics documentation for a manual rebuild."
+    },
+    "upgrade_required": {
+      "title": "Watercare asks for a newer version",
+      "description": "Watercare answered that its app needs updating, which most likely means its service has changed. Until this integration is updated to match, it cannot get new bills from Watercare, so Watercare shows as unavailable in Home Assistant. Water use already recorded is kept. Check HACS for an update to Watercare. This notice goes away by itself once Watercare answers normally again."
     }
   }
 }

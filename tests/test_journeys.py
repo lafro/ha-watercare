@@ -32,7 +32,7 @@ from scripts.journeys import (
 )
 
 from . import watercare_standin
-from .watercare_http import bills
+from .watercare_http import ISSUE_DAYS, bill_amount, bills
 
 _TODAY = date(2026, 10, 28)
 _DAY = timedelta(days=1)
@@ -789,6 +789,48 @@ def test_the_sensors_must_show_the_newest_bill(tmp_path: Path) -> None:
         False,
         False,
         True,
+        False,
+    ]
+
+
+def test_the_last_bill_amount_must_be_the_newest_bills(tmp_path: Path) -> None:
+    bill = _BILLS[-1]
+    shown = {
+        "state": str(bill_amount(bill)),
+        "attributes": {
+            "bill_date": (bill.end + ISSUE_DAYS * _DAY).isoformat(),
+            "billing_period_start": bill.start.isoformat(),
+            "billing_period_end": bill.end.isoformat(),
+        },
+    }
+    other_period = {
+        **shown,
+        "attributes": {**shown["attributes"], "billing_period_end": None},
+    }
+    client = _Client(
+        {
+            "/api/states/sensor.right": shown,
+            "/api/states/sensor.wrong_amount": {**shown, "state": "1.00"},
+            "/api/states/sensor.unknown": {**shown, "state": "unknown"},
+            "/api/states/sensor.no_period": other_period,
+        }
+    )
+    journey = _journey(tmp_path, client)
+    for entity in (
+        "sensor.right",
+        "sensor.wrong_amount",
+        "sensor.unknown",
+        "sensor.no_period",
+        "sensor.missing",
+        None,
+    ):
+        journey.check_bill_amount(entity, Import(_BILLS))
+    assert [check.ok for check in journey.result.checks] == [
+        True,
+        False,
+        False,
+        False,
+        False,
         False,
     ]
 
