@@ -12,7 +12,11 @@ so Home Assistant can store it and later restarts resume with a token refresh
 instead of a full sign-in.
 
 Logging never includes credentials, tokens, account or meter identifiers,
-URLs that contain them, or response bodies.
+URLs that contain them, or response bodies. The texts of the errors raised
+here fill the "Could not get data from Watercare" message, so they are plain
+words, and an aiohttp error is never chained to them: its text can hold the
+request's URL, which can hold the account number, and Home Assistant's debug
+log prints the whole chain.
 """
 
 from __future__ import annotations
@@ -223,11 +227,13 @@ class WatercareApi:
         try:
             async with self._sign_in_session() as session:
                 await self._async_sign_in(session)
-        except (aiohttp.ClientError, TimeoutError, ValueError) as err:
-            # ValueError: a response that should have been JSON was not.
-            raise WatercareConnectionError(
-                f"Could not complete the Watercare sign-in: {type(err).__name__}"
-            ) from err
+        except (aiohttp.ClientError, TimeoutError) as err:
+            _LOGGER.debug("The Watercare sign-in failed: %s", type(err).__name__)
+            raise WatercareConnectionError("no answer") from None
+        except ValueError:
+            # A response that should have been JSON was not.
+            _LOGGER.debug("The Watercare sign-in got an answer that is not JSON")
+            raise WatercareConnectionError("its answer could not be read") from None
 
     async def _async_sign_in(self, session: aiohttp.ClientSession) -> None:
         verifier = _code_verifier()
@@ -251,7 +257,7 @@ class WatercareApi:
             # A maintenance page, a rate limit or a changed flow: not a
             # credentials problem.
             raise WatercareConnectionError(
-                "The Watercare sign-in page had no sign-in settings"
+                "Watercare's sign-in page is unavailable, possibly for maintenance"
             )
         transaction = str(settings.get("transId", ""))
         csrf = str(settings.get("csrf", ""))
@@ -290,11 +296,9 @@ class WatercareApi:
             status = response.status
             location = response.headers.get("Location", "")
         if status not in _REDIRECT_STATUSES:
-            raise WatercareConnectionError(
-                f"Watercare sign-in confirmation failed with HTTP {status}"
-            )
+            raise WatercareConnectionError(f"the sign-in failed with HTTP {status}")
         if "?" not in location:
-            raise WatercareConnectionError("Watercare sign-in returned no redirect")
+            raise WatercareConnectionError("the sign-in did not finish")
         query = parse_qs(location.split("?", 1)[1])
         if "error" in query:
             raise WatercareAuthError("Watercare refused the sign-in")
@@ -316,7 +320,7 @@ class WatercareApi:
         ) as response:
             if response.status != _HTTP_OK:
                 raise WatercareConnectionError(
-                    f"Watercare token exchange failed with HTTP {response.status}"
+                    f"the sign-in failed with HTTP {response.status}"
                 )
             payload = await response.json(content_type=None)
         if not isinstance(payload, dict):
@@ -354,9 +358,10 @@ class WatercareApi:
                     _LOGGER.debug("Watercare returned a malformed token response")
                     return False
         except (aiohttp.ClientError, TimeoutError) as err:
-            raise WatercareConnectionError(
-                f"Could not refresh the Watercare token: {type(err).__name__}"
-            ) from err
+            _LOGGER.debug(
+                "Could not refresh the Watercare token: %s", type(err).__name__
+            )
+            raise WatercareConnectionError("no answer") from None
         if not isinstance(payload, dict):
             return False
         try:
@@ -387,16 +392,15 @@ class WatercareApi:
                     status = response.status
                     body = await response.read()
             except (aiohttp.ClientError, TimeoutError) as err:
-                raise WatercareConnectionError(
-                    f"Watercare API request failed: {type(err).__name__}"
-                ) from err
+                _LOGGER.debug("A Watercare request failed: %s", type(err).__name__)
+                raise WatercareConnectionError("no answer") from None
             _raise_for_service_error(body)
             if status == _HTTP_OK:
                 try:
                     return json.loads(body)
                 except ValueError as err:
                     raise WatercareConnectionError(
-                        "Watercare API returned malformed JSON"
+                        "its answer could not be read"
                     ) from err
             if status == _HTTP_UNAUTHORIZED and attempt == 0:
                 _LOGGER.debug("Watercare rejected the access token; renewing it")
@@ -406,19 +410,15 @@ class WatercareApi:
                 raise WatercareAuthError(
                     "Watercare rejected a freshly issued access token"
                 )
-            raise WatercareConnectionError(
-                f"Watercare API request failed with HTTP {status}"
-            )
-        raise WatercareConnectionError(
-            "Watercare API request failed"
-        )  # pragma: no cover
+            raise WatercareConnectionError(f"it answered with HTTP {status}")
+        raise WatercareConnectionError("no answer")  # pragma: no cover
 
     async def async_get_account(self) -> AccountSummary:
         """Fetch the account record (balance, due date, meter)."""
         payload = await self._async_get("v1/account")
         account = AccountSummary.from_json(payload)
         if account is None:
-            raise WatercareConnectionError("Watercare returned no account")
+            raise WatercareConnectionError("its answer had no account")
         self._account = account
         return account
 

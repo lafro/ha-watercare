@@ -12,6 +12,7 @@ import urllib.error
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -538,6 +539,7 @@ class _Client:
         self.issues = issues or []
         self.sent: list[str] = []
         self.translated: list[tuple[str, str]] = []
+        self.instance: Any = None
 
     def rest(self, method: str, path: str, data: dict[str, Any] | None = None) -> Any:
         del data
@@ -853,10 +855,64 @@ def test_the_repair_notices_must_be_those_the_prices_call_for(tmp_path: Path) ->
     unpriced = [Import((*_BILLS, _bill(date(2099, 7, 4), 31, 6000)))]
     assert notices([], priced)
     assert notices([issue("tariff_missing", "2025/26", "E2")], priced)
-    assert not notices([issue("statistics_rebuild_skipped")], priced)
+    assert not notices([issue("smart_meter")], priced)
     assert notices([issue("tariff_missing", "2099/00")], unpriced)
     assert not notices([issue("tariff_missing", "2098/99")], unpriced)
     assert not notices([], unpriced)
+
+
+def test_the_integrations_own_lines_above_debug_since_a_mark_fail_the_check(
+    tmp_path: Path,
+) -> None:
+    client = _Client()
+    client.instance = SimpleNamespace(state=tmp_path)
+    journey = _journey(tmp_path, client)
+    log = tmp_path / "config" / journeys.LOG_FILE
+
+    def line(level: str, name: str, thread: str = "MainThread") -> str:
+        when = "2026-10-01 12:00:00.123"
+        return f"{when} {level} ({thread}) [{name}] {level} from {name}\n"
+
+    def quiet(*lines: str, since: int) -> bool:
+        log.write_text("".join(lines))
+        journey.check_quiet("x", since)
+        return journey.result.checks[-1].ok
+
+    # No log: nothing was read, so the check fails.
+    assert journey.log_mark() == 0
+    assert journey.own_log(0) == []
+    journey.check_quiet("x", 0)
+    assert journey.result.checks[-1].ok is False
+    assert journey.result.checks[-1].detail == "no line from it in home-assistant.log"
+    log.parent.mkdir()
+    before = line("WARNING", "custom_components.watercare.api")
+    log.write_text(before)
+    mark = journey.log_mark()
+    assert mark == len(before)
+    debug = line("DEBUG", "custom_components.watercare.statistics")
+    # Its debug lines must be there, and only they.
+    assert not quiet(before, since=mark)
+    assert quiet(before, debug, since=mark)
+    # Home Assistant's own warning about any custom integration is not ours.
+    assert quiet(before, debug, line("WARNING", "homeassistant.loader"), since=mark)
+    assert quiet(
+        before, debug, line("INFO", "custom_components.watercarex"), since=mark
+    )
+    assert not quiet(
+        before, debug, line("INFO", "custom_components.watercare"), since=mark
+    )
+    assert not quiet(
+        before,
+        debug,
+        line("ERROR", "custom_components.watercare.coordinator", "Thread-2 (_run)"),
+        since=mark,
+    )
+    assert journey.result.checks[-1].detail == (
+        "ERROR: ERROR from custom_components.watercare.coordinator"
+    )
+    # A log started afresh by a restart, shorter than the mark, is read whole.
+    assert quiet(debug, since=10**6)
+    assert not quiet(debug, line("INFO", "custom_components.watercare"), since=10**6)
 
 
 def test_wait_gives_up_after_its_timeout(monkeypatch: pytest.MonkeyPatch) -> None:

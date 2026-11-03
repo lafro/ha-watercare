@@ -130,7 +130,7 @@ def test_period_falls_back_to_inclusive_day_count(days: object) -> None:
 
 
 @pytest.mark.parametrize("usage", [math.nan, math.inf, -math.inf])
-def test_non_finite_usage_skips_the_period(usage: float) -> None:
+def test_non_finite_usage_makes_the_period_unreadable(usage: float) -> None:
     # json.loads (aiohttp's default decoder) accepts NaN and Infinity.
     item = api_period(date(2026, 6, 3), date(2026, 7, 3), 12000)
     item["waterUsage"] = usage
@@ -138,7 +138,7 @@ def test_non_finite_usage_skips_the_period(usage: float) -> None:
     parsed = parse_billing_periods(
         [item, api_period(date(2026, 7, 4), date(2026, 8, 3), 8000)]
     )
-    assert parsed.skipped == 1
+    assert (parsed.unreadable, parsed.unfinished) == (1, 0)
     assert len(parsed.periods) == 1
 
 
@@ -163,7 +163,7 @@ def test_non_finite_statistics_and_balances_are_dropped() -> None:
         "0001-01-01T00:00:00+13:00",  # out of range in UTC
     ],
 )
-def test_a_date_with_no_auckland_date_skips_only_its_period(
+def test_a_date_with_no_auckland_date_is_left_out_as_unfinished(
     key: str, placeholder: str
 ) -> None:
     item = api_period(date(2026, 6, 3), date(2026, 7, 3), 12000)
@@ -172,11 +172,29 @@ def test_a_date_with_no_auckland_date_skips_only_its_period(
     parsed = parse_billing_periods(
         [item, api_period(date(2026, 7, 4), date(2026, 8, 3), 8000)]
     )
-    assert parsed.skipped == 1
+    # A placeholder, as for a period still open, not an unreadable one.
+    assert (parsed.unfinished, parsed.unreadable) == (1, 0)
     assert [period.end for period in parsed.periods] == [date(2026, 8, 3)]
 
 
-def test_periods_ending_today_or_later_are_skipped() -> None:
+@pytest.mark.parametrize(
+    ("change", "unfinished"),
+    [
+        pytest.param({"billingPeriodToDate": "9999-12-31T23:59:59"}, 1, id="naive"),
+        pytest.param({"billingPeriodToDate": "not a date"}, 0, id="unparseable"),
+        pytest.param({"billingPeriodToDate": None}, 0, id="missing"),
+        pytest.param({"waterUsage": -1}, 0, id="negative-usage"),
+    ],
+)
+def test_only_a_placeholder_date_counts_as_unfinished(
+    change: dict[str, object], unfinished: int
+) -> None:
+    item = {**api_period(date(2026, 6, 3), date(2026, 7, 3), 12000), **change}
+    parsed = parse_billing_periods([item, "not an object"])
+    assert (parsed.unfinished, parsed.unreadable) == (unfinished, 2 - unfinished)
+
+
+def test_periods_ending_today_or_later_are_unfinished() -> None:
     today = date(2026, 10, 8)
     far_future = api_period(date(2026, 9, 3), date(2026, 10, 3), 9000)
     far_future["billingPeriodToDate"] = "9999-12-31T00:00:00Z"
@@ -192,9 +210,9 @@ def test_periods_ending_today_or_later_are_skipped() -> None:
         date(2026, 9, 2),
         date(2026, 10, 7),
     ]
-    assert parsed.skipped == 3
+    assert (parsed.unfinished, parsed.unreadable) == (3, 0)
     # Without a today, as in the tests of other parts, nothing is cut.
-    assert parse_billing_periods(payload).skipped == 0
+    assert parse_billing_periods(payload).unfinished == 0
 
 
 def test_parse_billing_periods_sorts_skips_and_dedupes() -> None:
@@ -205,8 +223,58 @@ def test_parse_billing_periods_sorts_skips_and_dedupes() -> None:
         date(2026, 7, 3),
         date(2026, 8, 3),
     ]
-    assert parsed.skipped == 1
+    assert (parsed.unreadable, parsed.unfinished) == (1, 0)
     assert parsed.duplicates == 1
+    assert parsed.refused == ()
+
+
+@pytest.mark.parametrize("usage", ["missing", None])
+def test_a_smart_meter_period_without_usage_is_refused(usage: object) -> None:
+    item = api_period(date(2026, 7, 4), date(2026, 8, 3), 8000)
+    if usage == "missing":
+        del item["waterUsage"]
+    else:
+        item["waterUsage"] = usage
+    payload = [item, api_period(date(2026, 6, 3), date(2026, 7, 3), 12000)]
+
+    smart = parse_billing_periods(payload, smart_meter=True)
+    assert [period.end for period in smart.periods] == [date(2026, 7, 3)]
+    assert [(r.period.end, r.reason) for r in smart.refused] == [
+        (date(2026, 8, 3), "no_usage")
+    ]
+    # A manually read meter keeps 1.4.1's reading: no figure is no water.
+    manual = parse_billing_periods(payload)
+    assert [period.usage_litres for period in manual.periods] == [12000, 0]
+    assert manual.refused == ()
+
+
+def test_a_smart_meter_period_that_overlaps_the_one_before_is_refused() -> None:
+    payload = [
+        api_period(date(2026, 7, 20), date(2026, 8, 20), 9000),  # overlaps
+        api_period(date(2026, 7, 4), date(2026, 8, 3), 8000),
+        api_period(date(2026, 6, 3), date(2026, 7, 3), 12000),
+    ]
+    smart = parse_billing_periods(payload, smart_meter=True)
+    assert [period.end for period in smart.periods] == [
+        date(2026, 7, 3),
+        date(2026, 8, 3),
+    ]
+    assert [(r.period.start, r.reason) for r in smart.refused] == [
+        (date(2026, 7, 20), "overlaps_previous")
+    ]
+    # A manually read meter keeps it; the import moves it after the days
+    # already planned, as 1.4.1 did.
+    assert len(parse_billing_periods(payload).periods) == 3
+
+
+def test_a_smart_meter_period_may_start_on_the_day_the_one_before_ends() -> None:
+    payload = [
+        api_period(date(2026, 7, 3), date(2026, 8, 3), 8000),
+        api_period(date(2026, 6, 3), date(2026, 7, 3), 12000),
+    ]
+    smart = parse_billing_periods(payload, smart_meter=True)
+    assert len(smart.periods) == 2
+    assert smart.refused == ()
 
 
 @pytest.mark.parametrize("payload", [None, {"usage": []}, "[]"])
@@ -236,6 +304,10 @@ def test_account_summary() -> None:
         ({"meterType": "smartmeter-other"}, False, True),
         ({"meterType": "Mechanical"}, False, False),
         ({"meterType": None}, False, False),
+        ({"meterType": ""}, False, False),
+        ({"meterType": "   "}, False, False),
+        ({"meterType": " mechanical "}, False, False),
+        ({"meterType": " smartmeter-single "}, False, True),
         ({"transitionedMeterFromMMToSM": True}, True, True),
         ({"transitionedMeterFromMMToSM": False}, False, False),
         ({"transitionedMeterFromMMToSM": "true"}, False, False),

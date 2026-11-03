@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from collections.abc import Awaitable, Callable
 from http import HTTPStatus
@@ -12,10 +13,12 @@ import aiohttp
 import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from multidict import CIMultiDict, CIMultiDictProxy
 from pytest_homeassistant_custom_component.test_util.aiohttp import (
     AiohttpClientMocker,
     AiohttpClientMockResponse,
 )
+from yarl import URL
 
 from custom_components.watercare.api import (
     WatercareApi,
@@ -152,7 +155,7 @@ async def test_sign_in_without_settings_is_a_connection_problem(
     aioclient_mock.get(AUTHORIZE, text="<html>Down for maintenance</html>")
     api, _ = _api(aioclient_mock)
 
-    with pytest.raises(WatercareConnectionError):
+    with pytest.raises(WatercareConnectionError, match="possibly for maintenance"):
         await api.async_sign_in()
 
 
@@ -160,8 +163,9 @@ async def test_sign_in_network_error(aioclient_mock: AiohttpClientMocker) -> Non
     aioclient_mock.get(AUTHORIZE, exc=aiohttp.ClientConnectionError("boom"))
     api, _ = _api(aioclient_mock)
 
-    with pytest.raises(WatercareConnectionError):
+    with pytest.raises(WatercareConnectionError, match=r"^no answer$") as caught:
         await api.async_sign_in()
+    assert caught.value.__cause__ is None
 
 
 @pytest.mark.parametrize(
@@ -345,22 +349,48 @@ async def test_unauthorised_twice_is_an_auth_error(
 
 
 @pytest.mark.parametrize(
-    "response",
+    ("response", "message"),
     [
-        {"status": HTTPStatus.SERVICE_UNAVAILABLE},
-        {"exc": aiohttp.ServerDisconnectedError()},
-        {"text": "{not json"},
+        ({"status": HTTPStatus.SERVICE_UNAVAILABLE}, "it answered with HTTP 503"),
+        ({"exc": aiohttp.ServerDisconnectedError()}, "no answer"),
+        ({"text": "{not json"}, "its answer could not be read"),
     ],
 )
 async def test_request_failures_are_connection_errors(
-    aioclient_mock: AiohttpClientMocker, response: dict[str, Any]
+    aioclient_mock: AiohttpClientMocker, response: dict[str, Any], message: str
 ) -> None:
     aioclient_mock.post(TOKEN, json=TOKENS)
     aioclient_mock.get(ACCOUNT_URL, **response)
     api, _ = _api(aioclient_mock, refresh_token="stored")
 
-    with pytest.raises(WatercareConnectionError):
+    # The text ends up in "Could not get data from Watercare ({error})."
+    with pytest.raises(WatercareConnectionError, match=f"^{message}$"):
         await api.async_get_account()
+
+
+async def test_a_failed_request_keeps_its_address_out_of_the_log(
+    aioclient_mock: AiohttpClientMocker, caplog: pytest.LogCaptureFixture
+) -> None:
+    """aiohttp's errors can name the address, which holds the account number."""
+    url = URL(USAGE_URL)
+    request = aiohttp.RequestInfo(url, "GET", CIMultiDictProxy(CIMultiDict()), url)
+    aioclient_mock.post(TOKEN, json=TOKENS)
+    aioclient_mock.get(ACCOUNT_URL, json=ACCOUNT_PAYLOAD)
+    aioclient_mock.get(USAGE_URL, exc=aiohttp.TooManyRedirects(request, ()))
+    api, _ = _api(aioclient_mock, refresh_token="stored")
+    caplog.set_level(logging.DEBUG, logger="custom_components.watercare")
+
+    with pytest.raises(WatercareConnectionError) as caught:
+        await api.async_get_billing_periods()
+
+    # Home Assistant logs the error and the chain under it, so neither may
+    # carry aiohttp's message.
+    assert str(caught.value) == "no answer"
+    assert caught.value.__cause__ is None
+    assert caught.value.__suppress_context__
+    assert "TooManyRedirects" in caplog.text
+    assert ACCOUNT_NUMBER not in caplog.text
+    await api._session.close()
 
 
 async def test_get_transactions(aioclient_mock: AiohttpClientMocker) -> None:
@@ -456,8 +486,11 @@ async def test_malformed_token_responses(aioclient_mock: AiohttpClientMocker) ->
 
     # Refresh falls back; the sign-in's token exchange is a connection error.
     assert not await api.async_refresh_access_token()
-    with pytest.raises(WatercareConnectionError):
+    with pytest.raises(
+        WatercareConnectionError, match=r"^its answer could not be read$"
+    ) as caught:
         await api.async_sign_in()
+    assert caught.value.__cause__ is None
 
 
 async def test_home_assistant_sign_in_session(hass: HomeAssistant) -> None:

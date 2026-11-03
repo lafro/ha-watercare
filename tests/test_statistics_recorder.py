@@ -1,8 +1,9 @@
-"""Statistics import, anchoring and the one-off rebuild, on a real recorder."""
+"""Statistics import and anchoring, on a real recorder."""
 
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from functools import partial
@@ -10,10 +11,9 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-from homeassistant.components.recorder import Recorder, get_instance
+from homeassistant.components.recorder import get_instance
 from homeassistant.components.recorder.models import StatisticMeanType
 from homeassistant.components.recorder.statistics import (
-    async_add_external_statistics,
     get_metadata,
     statistics_during_period,
 )
@@ -33,8 +33,6 @@ from custom_components.watercare.const import (
 from custom_components.watercare.models import BillingPeriod
 from custom_components.watercare.statistics import (
     async_import,
-    async_rebuild,
-    async_rebuild_would_lose_history,
     bill_cost,
     day_start,
 )
@@ -118,6 +116,32 @@ async def test_first_import_writes_daily_rows(ha: HomeAssistant) -> None:
     assert wastewater[-1]["sum"] == pytest.approx(
         float(june_cost.wastewater + july_cost.wastewater)
     )
+
+
+def _watercare_log(caplog: pytest.LogCaptureFixture) -> list[tuple[int, str]]:
+    return [
+        (record.levelno, record.getMessage())
+        for record in caplog.records
+        if record.name.startswith("custom_components.watercare")
+    ]
+
+
+async def test_only_the_first_import_is_logged(
+    ha: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG, logger="custom_components.watercare")
+    await async_import(ha, [JUNE, JULY], PUBLISHED, RATIO)
+    await async_wait_recording_done(ha)
+
+    assert _watercare_log(caplog) == [
+        (
+            logging.DEBUG,
+            "Importing the Watercare history: 62 days from 2 billing periods",
+        )
+    ]
+    caplog.clear()
+    await async_import(ha, [JUNE, JULY, AUGUST], PUBLISHED, RATIO)
+    assert _watercare_log(caplog) == []
 
 
 async def test_repeat_poll_writes_nothing(ha: HomeAssistant) -> None:
@@ -232,114 +256,22 @@ async def test_daily_rows_across_daylight_saving_changes(ha: HomeAssistant) -> N
     assert [_start(row) for row in total] == [_start(row) for row in rows]
 
 
-async def _add_legacy_rows(hass: HomeAssistant) -> None:
-    """Store statistics the way 1.4.x did: one spike per bill end."""
-    meta: dict[str, Any] = {
-        "has_sum": True,
-        "mean_type": StatisticMeanType.NONE,
-        "name": "Watercare Water Consumption",
-        "source": "watercare",
-        "statistic_id": STAT_CONSUMPTION,
-        "unit_class": "volume",
-        "unit_of_measurement": "L",
-    }
-    async_add_external_statistics(
-        hass,
-        meta,
-        [
-            {"start": day_start(date(2026, 7, 3)), "sum": 12000.0},
-            {"start": day_start(date(2026, 8, 3)), "sum": 20000.0},
-        ],
-    )
-    cost_meta = {**meta, "statistic_id": STAT_TOTAL_COST, "unit_class": None}
-    cost_meta["unit_of_measurement"] = "NZD"
-    async_add_external_statistics(
-        hass,
-        cost_meta,  # type: ignore[arg-type]
-        [
-            {"start": day_start(date(2026, 7, 3)), "sum": 111.11},
-            {"start": day_start(date(2026, 8, 3)), "sum": 222.22},
-        ],
-    )
-    await async_wait_recording_done(hass)
-
-
-async def test_rebuild_replaces_legacy_rows(ha: HomeAssistant) -> None:
-    await _add_legacy_rows(ha)
-    assert len(await _rows(ha, STAT_CONSUMPTION)) == 2
-
-    result, cleared = async_rebuild(ha, [JUNE, JULY], PUBLISHED, RATIO)
-
-    assert result.rebuilt
-    assert result.consumption_rows == 62
-    rows = await _rows(ha, STAT_CONSUMPTION)
-    assert cleared.is_set()
-    assert len(rows) == 62
-    assert rows[-1]["sum"] == pytest.approx(20000)
-    total = await _rows(ha, STAT_TOTAL_COST)
-    assert len(total) == 62
-    june = bill_cost(JUNE, PUBLISHED, RATIO)
-    july = bill_cost(JULY, PUBLISHED, RATIO)
-    assert june is not None
-    assert july is not None
-    assert total[-1]["sum"] == pytest.approx(float(june.total + july.total))
-
-
-async def test_rebuild_clears_all_four_statistics(ha: HomeAssistant) -> None:
-    await async_import(ha, [JUNE, JULY], PUBLISHED, RATIO)
-    await async_wait_recording_done(ha)
-
-    async_rebuild(ha, [JULY], PUBLISHED, RATIO)
-
-    for statistic_id in ALL_STATISTIC_IDS:
-        rows = await _rows(ha, statistic_id)
-        assert len(rows) == 31, statistic_id
-        assert _start(rows[0]) == day_start(date(2026, 7, 4)), statistic_id
-
-
-async def test_rebuild_queues_the_clear_and_the_import_back_to_back(
-    ha: HomeAssistant,
-) -> None:
-    """One call, no await: nothing can come between the clear and the import."""
-    queued: list[Any] = []
-    queue_task = Recorder.queue_task
-
-    def _record(self: Recorder, task: Any) -> None:
-        queued.append(task)
-        queue_task(self, task)
-
-    with patch.object(Recorder, "queue_task", _record):
-        result, cleared = async_rebuild(ha, [JUNE, JULY], PUBLISHED, RATIO)
-
-    assert result.rebuilt
-    assert [type(task).__name__ for task in queued] == [
-        "ClearStatisticsTask",
-        *["ImportStatisticsTask"] * 4,
-    ]
-    clear = queued[0]
-    assert sorted(clear.statistic_ids) == sorted(ALL_STATISTIC_IDS)
-    # The clear's on_done only sets the flag the coordinator checks after
-    # waiting for the queue; nothing waits for it.
-    assert clear.on_done == cleared.set
-    assert [task.metadata["statistic_id"] for task in queued[1:]] == [
-        STAT_CONSUMPTION,
-        STAT_TOTAL_COST,
-        STAT_CONSUMPTION_COST,
-        STAT_WASTEWATER_COST,
-    ]
-
-
 async def test_an_import_reads_only_after_queued_writes(ha: HomeAssistant) -> None:
-    """A poll right after a rebuild continues the rebuilt rows, not the old ones.
+    """A poll right after an import continues the rows it queued.
 
-    The recorder is busy, so the rebuild is still queued when the next import
-    starts. Reading the stored history then would find the 1.4.x rows and
-    continue their sums.
+    The recorder is busy, so the first import's rows are still queued when the
+    next import starts. Reading the stored history then would find nothing
+    and import every bill again from zero.
     """
-    await _add_legacy_rows(ha)
-
     async with recorder_held(ha):
-        async_rebuild(ha, [JUNE, JULY], PUBLISHED, RATIO)
+        first = statistics._plan(
+            periods=[JUNE, JULY],
+            schedule=PUBLISHED,
+            wastewater_ratio=RATIO,
+            stored=dict.fromkeys(ALL_STATISTIC_IDS),
+            after=None,
+        )
+        statistics._async_queue(ha, first)
         poll = asyncio.ensure_future(
             async_import(ha, [JUNE, JULY, AUGUST], PUBLISHED, RATIO)
         )
@@ -366,14 +298,14 @@ async def test_a_statistic_with_no_stored_rows_is_reimported_with_the_same_rows(
     """The rule that makes the gap in the read barrier harmless.
 
     ``_async_read`` can go ahead while the recorder is still committing the
-    last write queued. Right after a rebuild, that is the import of a
-    statistic the rebuild has just cleared, so the next import reads it as
-    empty (the parameter says which). A statistic with no stored rows is
-    always imported in full, from zero, so the next import queues the
-    rebuild's rows for it again, and they replace themselves.
+    last write queued. Right after the first import, that write is the first
+    of its statistic, so the next import reads it as empty (the parameter
+    says which). A statistic with no stored rows is always imported in full,
+    from zero, so the next import queues the same rows for it again, and
+    they replace themselves.
     """
-    async_rebuild(ha, [JUNE, JULY], PUBLISHED, RATIO)
-    rebuilt = {sid: await _rows(ha, sid) for sid in ALL_STATISTIC_IDS}
+    await async_import(ha, [JUNE, JULY], PUBLISHED, RATIO)
+    imported = {sid: await _rows(ha, sid) for sid in ALL_STATISTIC_IDS}
     read = statistics._last_stored_rows
 
     def _read_before_the_last_write(
@@ -393,39 +325,66 @@ async def test_a_statistic_with_no_stored_rows_is_reimported_with_the_same_rows(
         assert (result.consumption_rows, result.cost_rows) == (62, 0)
     else:
         assert (result.consumption_rows, result.cost_rows) == (0, 62)
-    # The same rows: all four statistics are exactly as the rebuild left them.
-    assert {sid: await _rows(ha, sid) for sid in ALL_STATISTIC_IDS} == rebuilt
+    # The same rows: all four statistics are exactly as the import left them.
+    assert {sid: await _rows(ha, sid) for sid in ALL_STATISTIC_IDS} == imported
 
 
-async def test_rebuild_guard(ha: HomeAssistant) -> None:
-    # Nothing stored: nothing to lose.
-    assert not await async_rebuild_would_lose_history(ha, [JUNE, JULY])
-
-    # 1.4.x rows at bill ends with matching totals: safe to rebuild.
-    await _add_legacy_rows(ha)
-    assert not await async_rebuild_would_lose_history(ha, [JUNE, JULY, AUGUST])
-
-    # Watercare no longer returns the June bill: stored rows reach back
-    # before the oldest bill.
-    assert await async_rebuild_would_lose_history(ha, [JULY, AUGUST])
+# A smart meter's periods have never been seen. Whatever Watercare lists for
+# one is read, but a period that would move after the stored days with its
+# whole volume is refused instead: it may be a grown or revised period.
+GROWN_JUNE = _period(date(2026, 6, 3), date(2026, 7, 20), 15000)
+JULY_FROM_JUNE_END = _period(date(2026, 7, 3), date(2026, 8, 3), 8000)
 
 
-async def test_rebuild_guard_catches_a_dropped_bill_on_a_shared_boundary(
-    ha: HomeAssistant,
+@pytest.mark.parametrize("smart_meter", [False, True], ids=["manual", "smart"])
+async def test_a_smart_meter_period_overlapping_stored_days_is_refused(
+    ha: HomeAssistant, smart_meter: bool
 ) -> None:
-    await _add_legacy_rows(ha)
-    # Bills share boundary days and the API dropped the June bill: the next
-    # bill starts on 3 July, the day of the stored June row, so only the
-    # running total shows the loss.
-    july = _period(date(2026, 7, 3), date(2026, 8, 3), 8000)
-
-    assert await async_rebuild_would_lose_history(ha, [july, AUGUST])
-
-
-async def test_daily_rows_from_an_earlier_install_are_safe_to_rebuild(
-    ha: HomeAssistant,
-) -> None:
-    await async_import(ha, [JUNE, JULY], PUBLISHED, RATIO)
+    await async_import(ha, [JUNE], PUBLISHED, RATIO, smart_meter=smart_meter)
     await async_wait_recording_done(ha)
 
-    assert not await async_rebuild_would_lose_history(ha, [JUNE, JULY, AUGUST])
+    # Watercare lists the June period again, with the same start and a later
+    # end.
+    result = await async_import(
+        ha, [GROWN_JUNE], PUBLISHED, RATIO, smart_meter=smart_meter
+    )
+
+    rows = await _rows(ha, STAT_CONSUMPTION)
+    if smart_meter:
+        assert [(item.period, item.reason) for item in result.refused] == [
+            (GROWN_JUNE, "overlaps_stored")
+        ]
+        assert result.consumption_rows == 0
+        assert rows[-1]["sum"] == pytest.approx(12000)
+    else:
+        # A manually read meter keeps the rule from 1.5.0: the period moves
+        # after the stored days, with its whole volume.
+        assert result.refused == ()
+        assert result.consumption_rows == 17
+        assert rows[-1]["sum"] == pytest.approx(27000)
+
+
+async def test_a_smart_meter_period_starting_on_the_last_stored_day_is_read(
+    ha: HomeAssistant,
+) -> None:
+    await async_import(ha, [JUNE], PUBLISHED, RATIO, smart_meter=True)
+    await async_wait_recording_done(ha)
+
+    result = await async_import(
+        ha, [JUNE, JULY_FROM_JUNE_END], PUBLISHED, RATIO, smart_meter=True
+    )
+
+    assert result.refused == ()
+    assert result.consumption_rows == 31
+    rows = await _rows(ha, STAT_CONSUMPTION)
+    assert _start(rows[-1]) == day_start(date(2026, 8, 3))
+    assert rows[-1]["sum"] == pytest.approx(20000)
+
+
+async def test_a_smart_meter_first_import_takes_every_period(
+    ha: HomeAssistant,
+) -> None:
+    result = await async_import(ha, [JUNE, JULY], PUBLISHED, RATIO, smart_meter=True)
+
+    assert result.refused == ()
+    assert result.consumption_rows == 62

@@ -40,9 +40,11 @@ from .const import (
     CONF_WASTEWATER_RATE,
     CONF_WASTEWATER_RATIO,
     CONF_WATER_RATE,
+    DATA_STATISTICS_VERSION,
     DEFAULT_WASTEWATER_RATIO,
     DOMAIN,
     NZ_TIMEZONE,
+    STATISTICS_VERSION,
 )
 from .models import AccountSummary
 from .session import sign_in_session_factory
@@ -70,6 +72,14 @@ USER_SCHEMA = probatio.Schema(
     }
 )
 REAUTH_SCHEMA = probatio.Schema({probatio.Required(CONF_PASSWORD): _PASSWORD})
+_RATIO = NumberSelector(
+    NumberSelectorConfig(min=0, max=1, step=0.001, mode=NumberSelectorMode.BOX)
+)
+# Setup also asks for the wastewater ratio, so the first import, which prices
+# every bill Watercare still has, uses it. A later change never reprices them.
+SETUP_SCHEMA = USER_SCHEMA.extend(
+    {probatio.Required(CONF_WASTEWATER_RATIO, default=DEFAULT_WASTEWATER_RATIO): _RATIO}
+)
 
 
 def _rate_selector(unit: str, step: float) -> NumberSelector:
@@ -150,20 +160,20 @@ class WatercareConfigFlow(ConfigFlow, domain=DOMAIN):
                 account, refresh_token = result
                 await self.async_set_unique_id(account.account_number)
                 self._abort_if_unique_id_configured()
-                data: dict[str, Any] = {
-                    CONF_USERNAME: user_input[CONF_USERNAME],
-                    CONF_PASSWORD: user_input[CONF_PASSWORD],
-                }
-                if refresh_token:
-                    data[CONF_REFRESH_TOKEN] = refresh_token
+                data = _login_data(
+                    user_input[CONF_USERNAME], user_input[CONF_PASSWORD], refresh_token
+                )
+                data[DATA_STATISTICS_VERSION] = STATISTICS_VERSION
                 return self.async_create_entry(
                     title="Watercare",
                     data=data,
-                    options={CONF_WASTEWATER_RATIO: DEFAULT_WASTEWATER_RATIO},
+                    options={
+                        CONF_WASTEWATER_RATIO: float(user_input[CONF_WASTEWATER_RATIO])
+                    },
                 )
         return self.async_show_form(
             step_id="user",
-            data_schema=self.add_suggested_values_to_schema(USER_SCHEMA, user_input),
+            data_schema=self.add_suggested_values_to_schema(SETUP_SCHEMA, user_input),
             errors=errors,
         )
 
@@ -188,8 +198,7 @@ class WatercareConfigFlow(ConfigFlow, domain=DOMAIN):
             if result is not None:
                 account, refresh_token = result
                 await self.async_set_unique_id(account.account_number)
-                if entry.unique_id is not None:
-                    self._abort_if_unique_id_mismatch(reason="wrong_account")
+                self._abort_if_unique_id_mismatch(reason="wrong_account")
                 return self.async_update_reload_and_abort(
                     entry,
                     data_updates=_login_data(
@@ -216,8 +225,7 @@ class WatercareConfigFlow(ConfigFlow, domain=DOMAIN):
             if result is not None:
                 account, refresh_token = result
                 await self.async_set_unique_id(account.account_number)
-                if entry.unique_id is not None:
-                    self._abort_if_unique_id_mismatch(reason="wrong_account")
+                self._abort_if_unique_id_mismatch(reason="wrong_account")
                 return self.async_update_reload_and_abort(
                     entry,
                     data_updates=_login_data(
@@ -271,11 +279,7 @@ def store_year_prices(
 
 
 def _ratio_field() -> dict[probatio.Marker, NumberSelector]:
-    return {
-        probatio.Required(CONF_WASTEWATER_RATIO): NumberSelector(
-            NumberSelectorConfig(min=0, max=1, step=0.001, mode=NumberSelectorMode.BOX)
-        )
-    }
+    return {probatio.Required(CONF_WASTEWATER_RATIO): _RATIO}
 
 
 class WatercareOptionsFlow(OptionsFlowWithReload):

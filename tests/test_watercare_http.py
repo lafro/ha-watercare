@@ -100,7 +100,8 @@ def test_the_bills_are_a_function_of_the_date() -> None:
 def test_a_bill_is_a_mechanicalmonthly_item_the_integration_reads() -> None:
     issued = bills(_TODAY)
     parsed = parse_billing_periods([bill.payload() for bill in reversed(issued)])
-    assert (parsed.skipped, parsed.duplicates) == (0, 0)
+    assert (parsed.unfinished, parsed.unreadable, parsed.duplicates) == (0, 0, 0)
+    assert parsed.refused == ()
     assert [(p.start, p.end, p.usage_litres) for p in parsed.periods] == [
         (bill.start, bill.end, bill.litres) for bill in issued
     ]

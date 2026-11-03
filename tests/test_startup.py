@@ -8,10 +8,11 @@ waited for the recorder to confirm the clear, so a restart with the rebuild
 pending held bootstrap until it cancelled the setup after 300 seconds, after
 the clear and before the import: the statistics were left empty.
 
-These tests hold the recorder's thread, which is what the recorder looks like
-from an integration until start-up has finished, and check that setup
-finishes anyway and the statistics are rebuilt once the recorder runs. The
-first five fail on 1.5.0.
+The rebuild is gone, but a first import still writes every bill Watercare
+has through the same recorder. These tests hold the recorder's thread, which
+is what the recorder looks like from an integration until start-up has
+finished, and check that setup finishes anyway and the history is imported
+once the recorder runs.
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
 from homeassistant.core import CoreState, HomeAssistant
 
+from custom_components.watercare import statistics
 from custom_components.watercare.const import (
     ALL_STATISTIC_IDS,
     STAT_CONSUMPTION,
@@ -40,11 +42,10 @@ from custom_components.watercare.const import (
 )
 from custom_components.watercare.coordinator import WatercareCoordinator
 from custom_components.watercare.models import BillingPeriod
-from custom_components.watercare.statistics import ImportResult, async_rebuild
+from custom_components.watercare.statistics import ImportResult
 
 from .common import (
     HOLD_LIMIT,
-    add_legacy_statistics,
     api_period,
     default_periods,
     hold_recorder,
@@ -55,8 +56,7 @@ from .common import (
 
 # Setup takes well under a second here. 1.5.0 waited up to 300 seconds.
 PROMPTLY = 5.0
-REBUILT_ROWS = 92  # one per day of the three default bills
-LEGACY_ROWS = 3  # one per bill, as 1.4.x stored them
+FULL_ROWS = 92  # one per day of the three default bills
 
 
 async def _set_up_promptly(hass: HomeAssistant, entry: Any) -> None:
@@ -77,7 +77,7 @@ async def _row_counts(hass: HomeAssistant) -> dict[str, int]:
 
 @contextlib.contextmanager
 def _statistics_updates() -> Iterator[list[int]]:
-    """Record every statistics update (import or rebuild) by its bill count."""
+    """Record every statistics update by its bill count."""
     updates: list[int] = []
     update = WatercareCoordinator._async_update_statistics
 
@@ -91,12 +91,11 @@ def _statistics_updates() -> Iterator[list[int]]:
         yield updates
 
 
-async def test_restart_with_the_rebuild_pending_does_not_hold_start_up(
+async def test_restart_with_the_first_import_pending_does_not_hold_start_up(
     ha: HomeAssistant, mock_api: dict[str, AsyncMock]
 ) -> None:
-    """The first restart after upgrading from 1.4.x, as 1.5.0 handled it."""
-    await add_legacy_statistics(ha)
-    entry = make_entry(statistics_version=None)
+    """A restart before the first import ran, as 1.5.0 handled its rebuild."""
+    entry = make_entry()
     entry.add_to_hass(ha)
     # Bootstrap: config entries are set up before Home Assistant has started.
     ha.set_state(CoreState.not_running)
@@ -106,40 +105,35 @@ async def test_restart_with_the_rebuild_pending_does_not_hold_start_up(
         sensor = ha.states.get("sensor.watercare_last_bill_usage")
         assert sensor is not None
         assert sensor.state == "13000"
-        # Nothing has been cleared, and the rebuild is still to come.
-        assert "statistics_version" not in entry.data
-        assert entry.runtime_data.statistics_status == "rebuild_pending"
+        assert entry.runtime_data.statistics_status == "pending"
 
         # Start-up finishes; only then does the recorder work through its
         # queue.
         ha.set_state(CoreState.running)
         ha.bus.async_fire(EVENT_HOMEASSISTANT_STARTED)
         await ha.async_block_till_done()
-        assert "statistics_version" not in entry.data
+        assert entry.runtime_data.statistics_status == "pending"
         release.set()
 
     await ha.async_block_till_done(wait_background_tasks=True)
-    assert entry.runtime_data.statistics_status == "rebuilt"
-    assert entry.data["statistics_version"] == 2
-    assert await _row_counts(ha) == dict.fromkeys(ALL_STATISTIC_IDS, REBUILT_ROWS)
+    assert entry.runtime_data.statistics_status == "imported"
+    assert await _row_counts(ha) == dict.fromkeys(ALL_STATISTIC_IDS, FULL_ROWS)
 
 
 async def test_setup_after_start_up_does_not_wait_for_a_busy_recorder(
     ha: HomeAssistant, mock_api: dict[str, AsyncMock]
 ) -> None:
     """A reload, or adding the integration, while the recorder is busy."""
-    await add_legacy_statistics(ha)
-    entry = make_entry(statistics_version=None)
+    entry = make_entry()
     entry.add_to_hass(ha)
 
     async with recorder_held(ha):
         await _set_up_promptly(ha, entry)
-        assert "statistics_version" not in entry.data
+        assert entry.runtime_data.statistics_status == "pending"
 
     await ha.async_block_till_done(wait_background_tasks=True)
-    assert entry.runtime_data.statistics_status == "rebuilt"
-    assert entry.data["statistics_version"] == 2
-    assert await _row_counts(ha) == dict.fromkeys(ALL_STATISTIC_IDS, REBUILT_ROWS)
+    assert entry.runtime_data.statistics_status == "imported"
+    assert await _row_counts(ha) == dict.fromkeys(ALL_STATISTIC_IDS, FULL_ROWS)
 
 
 async def test_setup_does_not_wait_for_a_slow_database(
@@ -164,52 +158,14 @@ async def test_setup_does_not_wait_for_a_slow_database(
             release.set()
         await ha.async_block_till_done(wait_background_tasks=True)
 
-    assert len(await stored_rows(ha, STAT_CONSUMPTION)) == REBUILT_ROWS
+    assert len(await stored_rows(ha, STAT_CONSUMPTION)) == FULL_ROWS
 
 
-async def test_a_cancellation_cannot_fall_between_the_clear_and_the_import(
+async def test_unloading_while_the_first_import_waits_leaves_nothing_behind(
     ha: HomeAssistant, mock_api: dict[str, AsyncMock]
 ) -> None:
-    """Cancel whatever queues the clear, the moment it has queued it.
-
-    That is where bootstrap's timeout cancelled 1.5.0. The statistics must
-    end up either untouched or rebuilt, never cleared and left empty.
-    """
-    await add_legacy_statistics(ha)
-    entry = make_entry(statistics_version=None)
-    entry.add_to_hass(ha)
-    clear = Recorder.async_clear_statistics
-
-    def _clear_then_cancel(self: Recorder, *args: Any, **kwargs: Any) -> None:
-        clear(self, *args, **kwargs)
-        task = asyncio.current_task()
-        assert task is not None
-        task.cancel()
-
-    with patch.object(Recorder, "async_clear_statistics", _clear_then_cancel):
-        setup = ha.async_create_task(ha.config_entries.async_setup(entry.entry_id))
-        with contextlib.suppress(asyncio.CancelledError):
-            await setup
-        await ha.async_block_till_done(wait_background_tasks=True)
-
-    # The clear and the import were queued together, so both ran.
-    assert await _row_counts(ha) == dict.fromkeys(ALL_STATISTIC_IDS, REBUILT_ROWS)
-    # The update was cancelled before the recorder had taken them, so the
-    # rebuild is not recorded as done, and the next update repeats it.
-    assert "statistics_version" not in entry.data
-    await entry.runtime_data.async_refresh()
-    await ha.async_block_till_done(wait_background_tasks=True)
-    assert entry.data["statistics_version"] == 2
-    assert entry.runtime_data.statistics_status == "rebuilt"
-    assert await _row_counts(ha) == dict.fromkeys(ALL_STATISTIC_IDS, REBUILT_ROWS)
-
-
-async def test_unloading_while_the_rebuild_waits_leaves_the_statistics_alone(
-    ha: HomeAssistant, mock_api: dict[str, AsyncMock]
-) -> None:
-    """An unload (or shutdown) before the clear is queued cancels cleanly."""
-    await add_legacy_statistics(ha)
-    entry = make_entry(statistics_version=None)
+    """An unload (or shutdown) before anything is queued cancels cleanly."""
+    entry = make_entry()
     entry.add_to_hass(ha)
 
     async with recorder_held(ha):
@@ -217,43 +173,41 @@ async def test_unloading_while_the_rebuild_waits_leaves_the_statistics_alone(
         assert await ha.config_entries.async_unload(entry.entry_id)
     await ha.async_block_till_done(wait_background_tasks=True)
 
-    assert "statistics_version" not in entry.data
-    assert await _row_counts(ha) == dict.fromkeys(ALL_STATISTIC_IDS, LEGACY_ROWS)
+    assert await _row_counts(ha) == dict.fromkeys(ALL_STATISTIC_IDS, 0)
 
-    # The next setup rebuilds.
+    # The next setup imports everything.
     assert await ha.config_entries.async_setup(entry.entry_id)
     await ha.async_block_till_done(wait_background_tasks=True)
-    assert entry.data["statistics_version"] == 2
-    assert await _row_counts(ha) == dict.fromkeys(ALL_STATISTIC_IDS, REBUILT_ROWS)
+    assert entry.runtime_data.statistics_status == "imported"
+    assert await _row_counts(ha) == dict.fromkeys(ALL_STATISTIC_IDS, FULL_ROWS)
 
 
 async def test_a_poll_during_a_statistics_update_is_taken_in_turn(
     ha: HomeAssistant, mock_api: dict[str, AsyncMock]
 ) -> None:
     """One statistics update at a time; the later poll's bills follow it."""
-    await add_legacy_statistics(ha)
-    entry = make_entry(statistics_version=None)
+    entry = make_entry()
     entry.add_to_hass(ha)
 
     async with recorder_held(ha):
         await _set_up_promptly(ha, entry)
         coordinator = entry.runtime_data
-        # A new bill arrives while the rebuild waits for the recorder.
+        # A new bill arrives while the first import waits for the recorder.
         mock_api["periods"].return_value = [
             api_period(date(2026, 9, 3), date(2026, 10, 2), 9000),
             *default_periods(),
         ]
         await coordinator.async_refresh()
         assert coordinator.data.period_count == 4
-        assert "statistics_version" not in entry.data
+        assert coordinator.statistics_status == "pending"
     await ha.async_block_till_done(wait_background_tasks=True)
 
-    # The rebuild ran first, then the new bill was added after it.
-    assert coordinator.statistics_status == "rebuilt"
+    # The first import ran with the bills of the poll that set the entry up,
+    # then the new bill was added after it.
+    assert coordinator.statistics_status == "imported"
     assert coordinator.last_import.consumption_rows == 30
-    assert not coordinator.last_import.rebuilt
     rows = await stored_rows(ha, STAT_CONSUMPTION)
-    assert len(rows) == REBUILT_ROWS + 30
+    assert len(rows) == FULL_ROWS + 30
     assert rows[-1]["sum"] == pytest.approx(42000)
 
 
@@ -281,7 +235,7 @@ async def test_statistics_wait_for_home_assistant_to_start(
         await ha.async_block_till_done(wait_background_tasks=True)
         assert updates == [3]
 
-    assert len(await stored_rows(ha, STAT_CONSUMPTION)) == REBUILT_ROWS
+    assert len(await stored_rows(ha, STAT_CONSUMPTION)) == FULL_ROWS
 
 
 async def test_a_poll_that_finishes_after_unload_starts_no_statistics_update(
@@ -323,12 +277,12 @@ async def test_a_poll_that_finishes_after_unload_starts_no_statistics_update(
     # The poll finished after the unload, with the new bill, and nothing ran.
     assert coordinator.data.period_count == 4
     assert updates == []
-    assert len(await stored_rows(ha, STAT_CONSUMPTION)) == REBUILT_ROWS
+    assert len(await stored_rows(ha, STAT_CONSUMPTION)) == FULL_ROWS
 
 
 @pytest.mark.parametrize(
     ("reload", "expected_updates", "rows"),
-    [(False, [], 0), (True, [3], REBUILT_ROWS)],
+    [(False, [], 0), (True, [3], FULL_ROWS)],
     ids=["unloaded", "reloaded"],
 )
 async def test_an_entry_unloaded_during_start_up_starts_no_statistics_at_start(
@@ -390,106 +344,38 @@ async def test_an_entry_unloaded_during_start_up_starts_no_statistics_at_start(
     assert await _row_counts(ha) == dict.fromkeys(ALL_STATISTIC_IDS, rows)
 
 
-async def test_the_rebuild_is_recorded_as_done_only_once_the_recorder_has_it(
+async def test_a_first_import_dropped_at_shutdown_runs_again_on_the_next_start(
     ha: HomeAssistant, mock_api: dict[str, AsyncMock]
 ) -> None:
-    """Queued is not written, so the marker waits for the recorder.
+    """A shutdown can drop the queued import; the next start imports again.
 
     At shutdown the recorder works through its queue at the final-write
     stage. If that stage times out, ``Recorder._async_close`` drops what is
-    left, and that can even separate the clear from the import. So
-    ``statistics_version`` is recorded only once the recorder has taken the
-    rebuild's clear and import off its queue; a restart before then leaves
-    the marker unset, and the next start rebuilds (the next test).
+    left. The four statistics are then still empty, and a statistic with no
+    stored rows is imported in full.
     """
-    await add_legacy_statistics(ha)
-    entry = make_entry(statistics_version=None)
+    entry = make_entry()
     entry.add_to_hass(ha)
     queued = asyncio.Event()
-    releases: list[threading.Event] = []
+    holds: list[tuple[asyncio.Event, threading.Event]] = []
+    queue_writes = statistics._async_queue
 
-    def _rebuild_behind_a_busy_recorder(
-        *args: Any,
-    ) -> tuple[ImportResult, threading.Event]:
-        _, release = hold_recorder(ha)
-        releases.append(release)
-        result = async_rebuild(*args)
+    def _queue_behind_a_busy_recorder(*args: Any) -> ImportResult:
+        holds.append(hold_recorder(ha))
+        result = queue_writes(*args)
         queued.set()
         return result
 
-    with patch(
-        "custom_components.watercare.coordinator.async_rebuild",
-        side_effect=_rebuild_behind_a_busy_recorder,
-    ):
-        try:
-            await _set_up_promptly(ha, entry)
-            async with asyncio.timeout(PROMPTLY):
-                await queued.wait()
-            await ha.async_block_till_done()
-            # The clear and the import wait behind the busy recorder, and so
-            # does the marker.
-            assert "statistics_version" not in entry.data
-            assert entry.runtime_data.statistics_status == "rebuild_pending"
-        finally:
-            for release in releases:
-                release.set()
-        await ha.async_block_till_done(wait_background_tasks=True)
-
-    assert len(releases) == 1
-    assert entry.data["statistics_version"] == 2
-    assert entry.runtime_data.statistics_status == "rebuilt"
-    assert await _row_counts(ha) == dict.fromkeys(ALL_STATISTIC_IDS, REBUILT_ROWS)
-
-
-@pytest.mark.parametrize(
-    ("clear_written", "rows_left"),
-    [(False, LEGACY_ROWS), (True, 0)],
-    ids=["whole_rebuild_dropped", "imports_dropped_after_the_clear"],
-)
-async def test_a_rebuild_dropped_at_shutdown_runs_again_on_the_next_start(
-    ha: HomeAssistant,
-    mock_api: dict[str, AsyncMock],
-    clear_written: bool,
-    rows_left: int,
-) -> None:
-    """A shutdown can drop the queued rebuild, even between clear and import.
-
-    At shutdown the recorder works through its queue at the final-write
-    stage. If that stage times out, ``Recorder._async_close`` drops what is
-    left. If the recorder is running the clear by then, the imports behind it
-    are dropped and the four statistics stay empty across the restart. The
-    marker is unset either way, so the next start finds the history it can
-    recreate and rebuilds.
-    """
-    await add_legacy_statistics(ha)
-    entry = make_entry(statistics_version=None)
-    entry.add_to_hass(ha)
-    clear = Recorder.async_clear_statistics
-    queued = asyncio.Event()
-    holds: list[tuple[asyncio.Event, threading.Event]] = []
-
-    def _hold_at_the_clear(self: Recorder, *args: Any, **kwargs: Any) -> None:
-        # Hold the recorder thread in front of the clear, or between the
-        # clear and the imports, which are queued straight after it.
-        if not clear_written:
-            holds.append(hold_recorder(ha))
-        clear(self, *args, **kwargs)
-        if clear_written:
-            holds.append(hold_recorder(ha))
-        queued.set()
-
-    with patch.object(Recorder, "async_clear_statistics", _hold_at_the_clear):
+    with patch.object(statistics, "_async_queue", _queue_behind_a_busy_recorder):
         try:
             await _set_up_promptly(ha, entry)
             async with asyncio.timeout(PROMPTLY):
                 await queued.wait()
                 await holds[0][0].wait()
-            # Stopping Home Assistant cancels the update before the final
-            # write, as unloading the entry does.
+            # Stopping Home Assistant unloads the entry before the final write.
             assert await ha.config_entries.async_unload(entry.entry_id)
-            assert "statistics_version" not in entry.data
             # The final-write stage timed out: Recorder._async_close drops
-            # whatever is still queued, here the imports and perhaps the clear.
+            # whatever is still queued, here the import.
             recorder = get_instance(ha)
             with contextlib.suppress(queue.Empty):
                 while True:
@@ -499,48 +385,31 @@ async def test_a_rebuild_dropped_at_shutdown_runs_again_on_the_next_start(
                 release.set()
         await ha.async_block_till_done(wait_background_tasks=True)
 
-    assert "statistics_version" not in entry.data
-    assert await _row_counts(ha) == dict.fromkeys(ALL_STATISTIC_IDS, rows_left)
+    assert await _row_counts(ha) == dict.fromkeys(ALL_STATISTIC_IDS, 0)
 
-    # The next start rebuilds.
+    # The next start imports everything.
     assert await ha.config_entries.async_setup(entry.entry_id)
     await ha.async_block_till_done(wait_background_tasks=True)
-    assert entry.data["statistics_version"] == 2
-    assert entry.runtime_data.statistics_status == "rebuilt"
-    assert await _row_counts(ha) == dict.fromkeys(ALL_STATISTIC_IDS, REBUILT_ROWS)
+    assert entry.runtime_data.statistics_status == "imported"
+    assert await _row_counts(ha) == dict.fromkeys(ALL_STATISTIC_IDS, FULL_ROWS)
 
 
 @pytest.mark.parametrize("retried", [True, False], ids=["retried", "dropped"])
 async def test_an_import_the_recorder_retries_or_drops_is_completed_later(
     ha: HomeAssistant, mock_api: dict[str, AsyncMock], retried: bool
 ) -> None:
-    """The marker means the recorder has taken the rebuild, not written it all.
+    """An import that meets a database error ends up complete all the same.
 
-    An import that meets a database error is not written with the others. On
-    an error the recorder retries (a MySQL or MariaDB lock timeout or
-    deadlock), ``ImportStatisticsTask`` queues itself again, behind the wait
-    before the marker, so its rows are written after the marker. On any other
-    error the recorder logs it and gives up, and the statistic stays empty
-    under the marker. Either way it ends up with the rows the rebuild planned:
-    a statistic with no stored rows is always imported in full.
+    On an error the recorder retries (a MySQL or MariaDB lock timeout or
+    deadlock), ``ImportStatisticsTask`` queues itself again and its rows are
+    written later. On any other error the recorder logs it and gives up, and
+    the statistic stays empty. Either way it ends up with the rows the import
+    planned: a statistic with no stored rows is always imported in full.
     """
-    await add_legacy_statistics(ha)
-    entry = make_entry(statistics_version=None)
+    entry = make_entry()
     entry.add_to_hass(ha)
-    queued = asyncio.Event()
-    holds: list[tuple[asyncio.Event, threading.Event]] = []
     planned: list[Any] = []
     import_statistics = recorder_statistics.import_statistics
-
-    def _rebuild_behind_a_busy_recorder(
-        *args: Any,
-    ) -> tuple[ImportResult, threading.Event]:
-        # Queue the rebuild and the wait for it before the recorder runs any
-        # of it, so the retry is queued behind the wait, as it is in practice.
-        holds.append(hold_recorder(ha))
-        result = async_rebuild(*args)
-        queued.set()
-        return result
 
     def _one_import_fails(
         instance: Recorder, metadata: Any, statistics: Any, table: Any
@@ -549,39 +418,16 @@ async def test_an_import_the_recorder_retries_or_drops_is_completed_later(
         # False to queue the import again, True to give up.
         if metadata["statistic_id"] == STAT_TOTAL_COST and not planned:
             planned.extend(statistics)
-            if retried:
-                # Hold the recorder between the wait and the retry.
-                holds.append(hold_recorder(ha))
             return not retried
         return import_statistics(instance, metadata, statistics, table)
 
-    with (
-        patch(
-            "custom_components.watercare.coordinator.async_rebuild",
-            side_effect=_rebuild_behind_a_busy_recorder,
-        ),
-        patch.object(recorder_statistics, "import_statistics", _one_import_fails),
-    ):
-        try:
-            await _set_up_promptly(ha, entry)
-            async with asyncio.timeout(PROMPTLY):
-                await queued.wait()
-            holds[0][1].set()
-            await ha.async_block_till_done(wait_background_tasks=True)
-
-            # The recorder has taken the whole rebuild off its queue, so the
-            # marker is recorded, but one statistic has no rows yet.
-            assert entry.data["statistics_version"] == 2
-            assert entry.runtime_data.statistics_status == "rebuilt"
-            assert await stored_rows(ha, STAT_TOTAL_COST, wait=False) == []
-            assert len(holds) == (2 if retried else 1)
-        finally:
-            for _, release in holds:
-                release.set()
-        # The retry writes the rows after the marker. A dropped import leaves
-        # the statistic empty.
+    with patch.object(recorder_statistics, "import_statistics", _one_import_fails):
+        await _set_up_promptly(ha, entry)
+        await ha.async_block_till_done(wait_background_tasks=True)
+        # The retry writes the rows. A dropped import leaves the statistic
+        # empty.
         rows = await stored_rows(ha, STAT_TOTAL_COST)
-        assert len(rows) == (REBUILT_ROWS if retried else 0)
+        assert len(rows) == (FULL_ROWS if retried else 0)
 
         # The next update imports an empty statistic in full, and nothing else.
         await entry.runtime_data.async_refresh()
@@ -589,8 +435,8 @@ async def test_an_import_the_recorder_retries_or_drops_is_completed_later(
 
     last_import = entry.runtime_data.last_import
     assert last_import.consumption_rows == 0
-    assert last_import.cost_rows == (0 if retried else REBUILT_ROWS)
-    assert await _row_counts(ha) == dict.fromkeys(ALL_STATISTIC_IDS, REBUILT_ROWS)
+    assert last_import.cost_rows == (0 if retried else FULL_ROWS)
+    assert await _row_counts(ha) == dict.fromkeys(ALL_STATISTIC_IDS, FULL_ROWS)
     rows = await stored_rows(ha, STAT_TOTAL_COST)
     assert [(row["start"], row["state"], row["sum"]) for row in rows] == [
         (

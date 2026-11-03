@@ -62,12 +62,25 @@ async def test_usage_sensor_attributes_and_values(
     usage = ha.states.get("sensor.watercare_last_bill_usage")
     assert usage is not None
     assert usage.state == "13000"
-    assert usage.attributes["billing_period_usage"] == 13000
-    assert usage.attributes["reading_type"] == "E"
     assert usage.attributes["tariff_year"] == "2026/27"
     assert usage.attributes["consumption_rate_per_1000L"] == 2.46
-    assert usage.attributes["cost_currency"] == "NZD"
-    assert "meter_number" not in usage.attributes
+    assert usage.attributes["current_period_cost_wastewater"] == 43.66
+    assert usage.attributes["meter_type"] == "mechanical"
+    # 1.6.0 dropped those that repeated its own state, another sensor's or a
+    # constant.
+    assert not set(usage.attributes) & {
+        "billing_period_usage",
+        "daily_average",
+        "reading_type",
+        "household_efficiency_band",
+        "current_period_cost",
+        "account_balance",
+        "amount_due",
+        "overdue_amount",
+        "payment_due_date",
+        "cost_currency",
+        "meter_number",
+    }
     assert "state_class" not in usage.attributes
     assert ha.states.get("sensor.watercare_reading_type").state == "Estimate"
     # 13 kL over 30 days at 2026/27 prices, each line rounded to the cent:
@@ -170,6 +183,6 @@ def test_values_without_an_account_or_cost() -> None:
     usage = next(description for description in SENSORS if description.key == "usage")
     assert usage.attributes_fn is not None
     attributes = usage.attributes_fn(data)  # type: ignore[arg-type]
-    assert attributes["current_period_cost"] is None
+    assert attributes["current_period_cost_consumption"] is None
     assert attributes["consumption_rate_per_1000L"] is None
-    assert attributes["account_balance"] is None
+    assert attributes["meter_type"] is None
