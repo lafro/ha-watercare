@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from logging import ERROR, WARNING
+from logging import DEBUG, ERROR, WARNING
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -124,14 +124,35 @@ async def test_setup_errors(
     assert bool(reauth) is isinstance(error, WatercareAuthError)
 
 
-@pytest.mark.parametrize("payload", [{"usage": []}, [], [{"junk": True}]])
+@pytest.mark.parametrize(
+    ("payload", "key"),
+    [
+        ({"usage": []}, "unexpected_response"),
+        ([], "no_billing_periods"),
+        # Only unfinished: a new account before its first bill.
+        ([api_period(date(2026, 9, 3), date(2099, 10, 3), 9000)], "no_billing_periods"),
+        # Bills Watercare sent but none could be read: not "no bill yet".
+        ([{"junk": True}], "unexpected_response"),
+        (
+            [{"junk": True}, api_period(date(2026, 9, 3), date(2099, 10, 3), 9000)],
+            "unexpected_response",
+        ),
+    ],
+)
 async def test_unusable_billing_data_retries(
-    ha: HomeAssistant, mock_api: dict[str, AsyncMock], payload: Any
+    ha: HomeAssistant,
+    mock_api: dict[str, AsyncMock],
+    caplog: pytest.LogCaptureFixture,
+    payload: Any,
+    key: str,
 ) -> None:
     mock_api["periods"].return_value = payload
     entry = make_entry()
     await _setup(ha, entry)
     assert entry.state is ConfigEntryState.SETUP_RETRY
+    assert entry.error_reason_translation_key == key
+    # The retry's reason says why; no per-period warning repeats each retry.
+    assert _warnings(caplog) == []
 
 
 def _warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
@@ -647,6 +668,7 @@ async def test_the_last_bill_amount_survives_a_failed_read(
     mock_api: dict[str, AsyncMock],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
+    caplog.set_level(DEBUG, logger="custom_components.watercare")
     mock_api["transactions"].side_effect = WatercareConnectionError("down")
     entry = make_entry()
     await _setup(ha, entry)
@@ -677,10 +699,16 @@ async def test_the_last_bill_amount_survives_a_failed_read(
         amount = ha.states.get("sensor.watercare_last_bill_amount")
         assert amount.state == "98.76"
         assert amount.attributes["billing_period_end"] == "2026-09-02"
+    # The warning names no Python type; the debug line has it, never the text.
     assert (
-        "Could not read the newest Watercare bill's amount (unexpected "
-        "RuntimeError); Last bill amount keeps the amount read earlier, if any"
-    ) in caplog.text
+        "Could not read the newest Watercare bill's amount because of an "
+        "unexpected error; Last bill amount keeps the amount read earlier, if any"
+    ) in _warnings(caplog)
+    assert not [w for w in _warnings(caplog) if "RuntimeError" in w]
+    assert (
+        "Reading the Watercare bills' amounts failed: unexpected RuntimeError"
+        in caplog.text
+    )
     assert "synthetic-secret-detail" not in caplog.text
 
     # A placeholder date, which has no Auckland date, skips only its own item.

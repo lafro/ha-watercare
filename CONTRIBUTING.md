@@ -48,8 +48,8 @@ It builds a disposable Home Assistant as the live test does (the newest release,
 
 | Journey | What it does |
 | --- | --- |
-| `first_setup` | Email, password and a wastewater ratio, entry; the setup signs in once, and the entry's first update uses the refresh token; every bill imported as daily rows at that ratio; the integration logs no warning or error |
-| `add_again` | Remove Watercare, which keeps its statistics, and add it again after a new bill: only that bill's days are added; then remove it, delete the statistics and add it again: every bill is imported; no warning or error either time |
+| `first_setup` | Email, password and a wastewater ratio, entry; the setup signs in once, and the entry's first update uses the refresh token; every bill imported as daily rows at that ratio; the integration logs nothing above debug level |
+| `add_again` | Remove Watercare, which keeps its statistics, and add it again after a new bill: only that bill's days are added; then remove it, delete the statistics and add it again: every bill is imported; nothing above debug level either time |
 | `wrong_password` | Watercare rejects the password (`invalid_auth`) and the form keeps the email; the right one creates the entry |
 | `watercare_down` | Watercare says it is down for maintenance (`service_maintenance`), then answers 503 (`cannot_connect`); the same form works once it is back |
 | `reauth` | The password changes at Watercare, ending every sign-in; the next update asks to sign in again; the new password, and the reloaded entry uses its refresh token; history unbroken |

@@ -337,8 +337,10 @@ def bill_cost(
 ) -> BillCost | None:
     """Return the cost of one bill, or None if its tariff is unknown.
 
-    The statistics spread this same cost over the bill's days, so the sensor
-    and the Energy dashboard always agree.
+    The statistics spread this same cost over the bill's days when they record
+    them, so the sensor and the Energy dashboard agree until the ratio or the
+    prices change: the sensor then reprices the bill at once, while days
+    already recorded keep the cost they were recorded with.
     """
     tariff = schedule.for_day(pricing_date(period))
     if tariff is None:
@@ -510,7 +512,7 @@ async def async_import(
         after=after,
     )
     if consumption is None and plan.result.consumption_rows:
-        _LOGGER.info(
+        _LOGGER.debug(
             "Importing the Watercare history: %d days from %d billing periods",
             plan.result.consumption_rows,
             len(periods),

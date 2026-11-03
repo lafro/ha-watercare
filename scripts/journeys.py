@@ -131,6 +131,13 @@ TOKEN_LIFETIME_S = 600
 SHOWN_PROBLEMS = 5
 # The stand-in's folder, in the instance's configuration folder.
 STANDIN_FOLDER = "journeys"
+# Home Assistant's log, in the instance's configuration folder, and its lines:
+# "<date> <time>.<ms> <LEVEL> (<thread>) [<logger>] <message>".
+LOG_FILE = "home-assistant.log"
+LOG_LINE = re.compile(
+    r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{3} (?P<level>[A-Z]+) "
+    r"\(.*?\) \[(?P<name>[^\]]+)\] (?P<message>.*)$"
+)
 _FAKES = ("watercare_http.py",)
 
 
@@ -918,28 +925,50 @@ class Journey:
             SYNC_TIMEOUT_S,
         )
 
-    def own_log(self, since: datetime) -> list[str]:
-        """Return the integration's warnings and errors logged since ``since``.
+    def log_mark(self) -> int:
+        """Return where the instance's log ends now, to read ``own_log`` from."""
+        try:
+            return self._log_file().stat().st_size
+        except FileNotFoundError:
+            return 0
 
-        From Settings → System → Logs, which keeps each message once, with
-        when it was last logged.
+    def own_log(self, since: int) -> list[tuple[str, str]]:
+        """Return the integration's log lines after ``since``: level, message.
+
+        From the instance's log, where the integration logs at debug level;
+        Settings → System → Logs keeps only warnings and errors. A log shorter
+        than the mark was started afresh by a restart, so it is read whole.
         """
-        (entries,) = self.client.ws({"type": "system_log/list"})
+        try:
+            with self._log_file().open("rb") as log:
+                end = log.seek(0, 2)
+                log.seek(since if since <= end else 0)
+                text = log.read().decode(errors="replace")
+        except FileNotFoundError:
+            return []
+        own = f"custom_components.{DOMAIN}"
         return [
-            f"{entry.get('level')}: {' / '.join(entry.get('message') or [])}"
-            for entry in entries
-            if str(entry.get("name", "")).startswith(f"custom_components.{DOMAIN}")
-            and float(entry.get("timestamp", 0)) >= since.timestamp()
+            (line["level"], line["message"])
+            for line in map(LOG_LINE.match, text.splitlines())
+            if line is not None
+            and (line["name"] == own or line["name"].startswith(f"{own}."))
         ]
 
-    def check_quiet(self, when: str, since: datetime) -> None:
-        """Check that the integration logged no warning or error since ``since``."""
-        logged = self.own_log(since)
+    def check_quiet(self, when: str, since: int) -> None:
+        """Check that the integration logged nothing above debug since ``since``.
+
+        Its debug lines must be there, so a log that could not be read fails.
+        """
+        lines = self.own_log(since)
+        loud = [f"{level}: {message}" for level, message in lines if level != "DEBUG"]
         self.check(
-            f"{when}, the integration logged no warning or error",
-            not logged,
-            "; ".join(logged[:3]),
+            f"{when}, the integration logged nothing above debug level",
+            bool(lines) and not loud,
+            "; ".join(loud[:3]) if lines else f"no line from it in {LOG_FILE}",
         )
+
+    def _log_file(self) -> Path:
+        return live_ha.config_dir(self.client.instance.state) / LOG_FILE
 
     # -------------------------------------------------------------- entries
 
@@ -1274,6 +1303,7 @@ def _sign_in_statuses(records: Iterable[dict[str, Any]]) -> list[str]:
 def first_setup(j: Journey) -> None:
     """First setup: email, password and ratio, the entry, the history imported."""
     j.scenario(j.watercare())
+    mark = j.log_mark()
     done, started = j.set_up(EMAIL, PASSWORD, SETUP_RATIO)
     j.require(
         "the entry is created",
@@ -1327,7 +1357,7 @@ def first_setup(j: Journey) -> None:
         f"ratio {stored.get('wastewater_ratio')}",
     )
     j.check_entry(entry_id, [Import(issued, Pricing(SETUP_RATIO))])
-    j.check_quiet("from the setup to the first import", started)
+    j.check_quiet("from the setup to the first import", mark)
 
 
 def add_again(j: Journey) -> None:
@@ -1340,7 +1370,7 @@ def add_again(j: Journey) -> None:
 
     # A bill issued while it was gone: adding it again adds only its days.
     j.scenario(j.watercare(withheld=0))
-    began = datetime.now(UTC)
+    mark = j.log_mark()
     again_id, again = j.new_entry()
     newest = again.bills[-1].days
     last = j.diagnostics(again_id)["coordinator"].get("last_import") or {}
@@ -1353,13 +1383,13 @@ def add_again(j: Journey) -> None:
     )
     after = j.check_entry(again_id, [first, again])
     j.check_unchanged("Watercare was added again", before, after)
-    j.check_quiet("added again over the kept statistics", began)
+    j.check_quiet("added again over the kept statistics", mark)
 
     # The statistics deleted, as the README says for starting again: the
     # next setup imports every bill, at the ratio it is given.
     j.remove(again_id)
     j.clear_statistics()
-    began = datetime.now(UTC)
+    mark = j.log_mark()
     fresh_id, fresh = j.new_entry(ratio=SETUP_RATIO)
     days = sum(bill.days for bill in fresh.bills)
     last = j.diagnostics(fresh_id)["coordinator"].get("last_import") or {}
@@ -1369,7 +1399,7 @@ def add_again(j: Journey) -> None:
         f"{last.get('consumption_rows')} usage rows (expected {days})",
     )
     j.check_entry(fresh_id, [fresh])
-    j.check_quiet("added again after deleting the statistics", began)
+    j.check_quiet("added again after deleting the statistics", mark)
 
 
 def wrong_password(j: Journey) -> None:

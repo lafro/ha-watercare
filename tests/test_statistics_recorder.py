@@ -135,7 +135,7 @@ async def test_only_the_first_import_is_logged(
 
     assert _watercare_log(caplog) == [
         (
-            logging.INFO,
+            logging.DEBUG,
             "Importing the Watercare history: 62 days from 2 billing periods",
         )
     ]

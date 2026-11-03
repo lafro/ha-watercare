@@ -188,6 +188,25 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
                 parsed.unfinished,
                 parsed.duplicates,
             )
+        if not parsed.periods:
+            # The error says why. The per-period warnings stay out: a setup
+            # retry starts a new coordinator, so they would repeat each retry.
+            _LOGGER.debug(
+                "No usable billing period: %d unreadable, %d refused",
+                parsed.unreadable,
+                len(parsed.refused),
+            )
+            raise UpdateFailed(
+                translation_domain=DOMAIN,
+                translation_key=(
+                    "smart_meter"
+                    if account.smart_meter
+                    # Bills were sent but none could be read: not a missing bill.
+                    else "unexpected_response"
+                    if parsed.unreadable
+                    else "no_billing_periods"
+                ),
+            )
         if parsed.unreadable > self._warned_unreadable:
             self._warned_unreadable = parsed.unreadable
             _LOGGER.warning(
@@ -196,13 +215,6 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
                 parsed.unreadable,
             )
         self._log_refused(parsed.refused)
-        if not parsed.periods:
-            raise UpdateFailed(
-                translation_domain=DOMAIN,
-                translation_key=(
-                    "smart_meter" if account.smart_meter else "no_billing_periods"
-                ),
-            )
 
         periods = parsed.periods
         latest = periods[-1]
@@ -242,12 +254,16 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
             return False
         except Exception as err:  # noqa: BLE001 - the amount never fails the poll
             if not self._last_bill_failing:
-                # Only the error's type: its message could quote the response.
                 _LOGGER.warning(
-                    "Could not read the newest Watercare bill's amount (unexpected "
-                    "%s); Last bill amount keeps the amount read earlier, if any",
-                    type(err).__name__,
+                    "Could not read the newest Watercare bill's amount because of an "
+                    "unexpected error; Last bill amount keeps the amount read "
+                    "earlier, if any"
                 )
+            # Only the error's type: its message could quote the response.
+            _LOGGER.debug(
+                "Reading the Watercare bills' amounts failed: unexpected %s",
+                type(err).__name__,
+            )
             self._last_bill_failing = True
             return False
         self._last_bill_failing = False

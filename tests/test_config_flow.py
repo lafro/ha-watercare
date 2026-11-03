@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Generator
 from decimal import Decimal
-from logging import INFO, WARNING
+from logging import DEBUG, INFO
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -127,7 +127,7 @@ async def test_first_install_from_the_form(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Add Watercare as a new user would: every bill, at the entered ratio."""
-    caplog.set_level(INFO, logger="custom_components.watercare")
+    caplog.set_level(DEBUG, logger="custom_components.watercare")
     result = await ha.config_entries.flow.async_init(
         DOMAIN, context={"source": SOURCE_USER}
     )
@@ -151,9 +151,10 @@ async def test_first_install_from_the_form(
     own = [
         r for r in caplog.records if r.name.startswith("custom_components.watercare")
     ]
-    assert [r.getMessage() for r in own if r.levelno >= WARNING] == []
-    assert [r.getMessage() for r in own if r.levelno == INFO] == [
-        "Importing the Watercare history: 92 days from 3 billing periods"
+    # A first install says nothing above DEBUG.
+    assert [r.getMessage() for r in own if r.levelno >= INFO] == []
+    assert "Importing the Watercare history: 92 days from 3 billing periods" in [
+        r.getMessage() for r in own if r.levelno == DEBUG
     ]
     mock_api["account"].assert_called()
 

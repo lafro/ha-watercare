@@ -132,7 +132,7 @@ automation:
 
 ## Known limitations
 
-- **Mechanical meters only.** If Watercare reports a smart meter at your property, or that your meter was replaced with one, a **Watercare smart meters are not supported yet** repair notice appears. The integration cannot read a smart meter's water use, so that use is not recorded; water use already recorded is kept. While Watercare reports a smart meter, a billing period that overlaps days already recorded, or has no water use figure, is skipped with a warning in the log. If Watercare has no bills from a manually read meter, setup keeps retrying. The notice goes away by itself if Watercare reports a manually read meter again.
+- **Mechanical meters only.** If Watercare reports a smart meter at your property, or that your meter was replaced with one, a **Watercare smart meters are not supported yet** repair notice appears. The integration reads only billing periods, not a smart meter's own readings; water use already recorded is kept. While Watercare reports a smart meter, a billing period that overlaps days already recorded or the period before it, or has no water use figure, is skipped with a warning in the log. If Watercare has no bills from a manually read meter, setup keeps retrying. The notice goes away by itself if Watercare reports a manually read meter again.
 - Daily values are each bill spread evenly over its days, not measured daily use.
 - Costs are worked out from Watercare's published residential prices, so they leave out infrastructure growth charges, trade waste, late fees and credits. **Last bill amount** shows what Watercare actually billed. Business accounts are not supported.
 - Bills that start before 1 July 2018 are priced at the 2018/19 prices, the earliest the integration has.

@@ -486,8 +486,11 @@ async def test_malformed_token_responses(aioclient_mock: AiohttpClientMocker) ->
 
     # Refresh falls back; the sign-in's token exchange is a connection error.
     assert not await api.async_refresh_access_token()
-    with pytest.raises(WatercareConnectionError):
+    with pytest.raises(
+        WatercareConnectionError, match=r"^its answer could not be read$"
+    ) as caught:
         await api.async_sign_in()
+    assert caught.value.__cause__ is None
 
 
 async def test_home_assistant_sign_in_session(hass: HomeAssistant) -> None:

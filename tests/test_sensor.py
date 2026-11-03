@@ -66,7 +66,8 @@ async def test_usage_sensor_attributes_and_values(
     assert usage.attributes["consumption_rate_per_1000L"] == 2.46
     assert usage.attributes["current_period_cost_wastewater"] == 43.66
     assert usage.attributes["meter_type"] == "mechanical"
-    # 1.6.0 dropped the attributes that repeated another sensor's state.
+    # 1.6.0 dropped those that repeated its own state, another sensor's or a
+    # constant.
     assert not set(usage.attributes) & {
         "billing_period_usage",
         "daily_average",

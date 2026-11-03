@@ -51,8 +51,8 @@ def _round(value: Any) -> float | None:
 def _usage_attributes(data: WatercareData) -> dict[str, Any]:
     """Return the usage sensor's attributes, with their 1.4.x names.
 
-    Only what no other sensor shows: 1.6.0 dropped the attributes that
-    repeated another sensor's state.
+    1.6.0 dropped those that repeated its own state, another sensor's or a
+    constant.
     """
     period = data.latest_period
     cost = data.latest_cost

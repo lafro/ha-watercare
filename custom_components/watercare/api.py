@@ -227,10 +227,13 @@ class WatercareApi:
         try:
             async with self._sign_in_session() as session:
                 await self._async_sign_in(session)
-        except (aiohttp.ClientError, TimeoutError, ValueError) as err:
-            # ValueError: a response that should have been JSON was not.
+        except (aiohttp.ClientError, TimeoutError) as err:
             _LOGGER.debug("The Watercare sign-in failed: %s", type(err).__name__)
             raise WatercareConnectionError("no answer") from None
+        except ValueError:
+            # A response that should have been JSON was not.
+            _LOGGER.debug("The Watercare sign-in got an answer that is not JSON")
+            raise WatercareConnectionError("its answer could not be read") from None
 
     async def _async_sign_in(self, session: aiohttp.ClientSession) -> None:
         verifier = _code_verifier()
