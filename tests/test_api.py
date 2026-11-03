@@ -21,13 +21,22 @@ from custom_components.watercare.api import (
     WatercareApi,
     WatercareAuthError,
     WatercareConnectionError,
+    WatercareMaintenanceError,
+    WatercareUpgradeRequiredError,
     _default_sign_in_session,
     parse_settings,
     sign_in_cookie_jar,
 )
 from custom_components.watercare.session import sign_in_session_factory
 
-from .common import ACCOUNT_NUMBER, ACCOUNT_PAYLOAD, EMAIL, PASSWORD, default_periods
+from .common import (
+    ACCOUNT_NUMBER,
+    ACCOUNT_PAYLOAD,
+    EMAIL,
+    PASSWORD,
+    default_periods,
+    default_transactions,
+)
 
 AUTHORIZE = re.compile(r"^https://wslpwb2cprd\.b2clogin\.com/.*/oAuth2/v2\.0/authorize")
 SELF_ASSERTED = re.compile(r"^https://wslpwb2cprd\.b2clogin\.com/.*/SelfAsserted")
@@ -36,6 +45,9 @@ TOKEN = re.compile(r"^https://wslpwb2cprd\.b2clogin\.com/.*/oauth2/v2\.0/token")
 ACCOUNT_URL = "https://customerapp.api.water.co.nz/v1/account"
 USAGE_URL = (
     f"https://customerapp.api.water.co.nz/v1/usage/{ACCOUNT_NUMBER}/mechanicalmonthly"
+)
+TRANSACTIONS_URL = (
+    f"https://customerapp.api.water.co.nz/v1/account/{ACCOUNT_NUMBER}/transactions"
 )
 TRANSACTION = "StateProperties=eyJUSUQiOiJ0ZXN0In0"
 LOGIN_PAGE = (
@@ -349,6 +361,70 @@ async def test_request_failures_are_connection_errors(
 
     with pytest.raises(WatercareConnectionError):
         await api.async_get_account()
+
+
+async def test_get_transactions(aioclient_mock: AiohttpClientMocker) -> None:
+    aioclient_mock.post(TOKEN, json=TOKENS)
+    aioclient_mock.get(ACCOUNT_URL, json=ACCOUNT_PAYLOAD)
+    aioclient_mock.get(TRANSACTIONS_URL, json=default_transactions())
+    api, _ = _api(aioclient_mock, refresh_token="stored")
+
+    assert await api.async_get_transactions() == default_transactions()
+    # With the same token as every other call: no second sign-in.
+    assert [str(call[1]) for call in aioclient_mock.mock_calls if call[0] == "GET"] == [
+        ACCOUNT_URL,
+        TRANSACTIONS_URL,
+    ]
+
+
+@pytest.mark.parametrize(
+    ("status", "error", "raised"),
+    [
+        (
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            "service_maintenance",
+            WatercareMaintenanceError,
+        ),
+        (HTTPStatus.OK, "service_maintenance", WatercareMaintenanceError),
+        (HTTPStatus.UNAUTHORIZED, "service_maintenance", WatercareMaintenanceError),
+        (HTTPStatus.FORBIDDEN, "upgrade_required", WatercareUpgradeRequiredError),
+        (HTTPStatus.OK, "upgrade_required", WatercareUpgradeRequiredError),
+    ],
+)
+async def test_the_error_field_names_the_service_state_whatever_the_status(
+    aioclient_mock: AiohttpClientMocker,
+    status: HTTPStatus,
+    error: str,
+    raised: type[WatercareConnectionError],
+) -> None:
+    aioclient_mock.post(TOKEN, json=TOKENS)
+    aioclient_mock.get(ACCOUNT_URL, status=status, json={"error": error})
+    api, _ = _api(aioclient_mock, refresh_token="stored")
+
+    with pytest.raises(raised):
+        await api.async_get_account()
+    # Neither is a sign-in problem: no second token.
+    assert len([call for call in aioclient_mock.mock_calls if call[0] == "POST"]) == 1
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"status": HTTPStatus.SERVICE_UNAVAILABLE, "json": {"error": "other"}},
+        {"status": HTTPStatus.SERVICE_UNAVAILABLE, "json": ["service_maintenance"]},
+        {"status": HTTPStatus.SERVICE_UNAVAILABLE, "text": "<html>maintenance</html>"},
+    ],
+)
+async def test_other_error_answers_stay_connection_errors(
+    aioclient_mock: AiohttpClientMocker, response: dict[str, Any]
+) -> None:
+    aioclient_mock.post(TOKEN, json=TOKENS)
+    aioclient_mock.get(ACCOUNT_URL, **response)
+    api, _ = _api(aioclient_mock, refresh_token="stored")
+
+    with pytest.raises(WatercareConnectionError) as caught:
+        await api.async_get_account()
+    assert type(caught.value) is WatercareConnectionError
 
 
 async def test_rotated_token_without_a_callback(

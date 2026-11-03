@@ -16,6 +16,8 @@ from custom_components.watercare.api import (
     WatercareApi,
     WatercareAuthError,
     WatercareConnectionError,
+    WatercareMaintenanceError,
+    WatercareUpgradeRequiredError,
     _default_sign_in_session,
 )
 from custom_components.watercare.config_flow import (
@@ -79,6 +81,8 @@ async def test_user_flow_creates_entry(
     [
         (WatercareAuthError("no"), "invalid_auth"),
         (WatercareConnectionError("down"), "cannot_connect"),
+        (WatercareMaintenanceError("maintenance"), "service_maintenance"),
+        (WatercareUpgradeRequiredError("upgrade"), "upgrade_required"),
         (RuntimeError("bug"), "unknown"),
     ],
 )

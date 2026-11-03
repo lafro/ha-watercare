@@ -53,6 +53,7 @@ from .watercare_http import (
     PASSWORD,
     account_payload,
     api_period,
+    api_transaction,
 )
 
 REFRESH_TOKEN = "synthetic-refresh-token"
@@ -71,6 +72,23 @@ def default_periods() -> list[dict[str, Any]]:
         api_period(date(2026, 7, 4), date(2026, 8, 3), 8000),
         api_period(date(2026, 6, 3), date(2026, 7, 3), 12000),
     ]
+
+
+def default_transactions() -> dict[str, Any]:
+    """The default bills' amounts and payments, newest first.
+
+    Each bill is issued two days after its period ends; the newest is not
+    paid yet.
+    """
+    return {
+        "items": [
+            api_transaction(date(2026, 9, 4), 98.76, balance=98.76),
+            api_transaction(date(2026, 8, 19), 76.54, kind="payment"),
+            api_transaction(date(2026, 8, 5), 76.54, balance=76.54),
+            api_transaction(date(2026, 7, 19), 102.34, kind="payment"),
+            api_transaction(date(2026, 7, 5), 102.34, balance=102.34),
+        ]
+    }
 
 
 def make_entry(

@@ -1,12 +1,34 @@
 # Changelog
 
-## Unreleased
+## 1.6.0
+
+Shows the amount of your latest Watercare bill, works out each bill's cost to the cent, explains when Watercare is down for maintenance or reports a smart meter, and gives two sensors the names Watercare's app uses.
+
+### The amount of your latest bill
+
+- A new sensor, **Last bill amount**, shows the total of your newest bill as Watercare issued it, in NZD, from your Watercare billing history. Its attributes are the bill's date and the billing period it charges for. The period stays empty when none matches: until the integration has your water use for that period, which is the day after the period ends at the earliest, or for a bill dated more than a week after its period ended. **Last bill cost** is still there: it is worked out from Watercare's published prices, while **Last bill amount** is the bill itself, so it can include charges and credits the calculation leaves out.
+- If your billing history cannot be read on an update, everything else updates as usual and **Last bill amount** keeps the amount it had. After a restart of Home Assistant or a reload of Watercare, it shows as unknown until the billing history can be read again.
+- Diagnostics show whether the bill was read and its date, never its amount.
+
+### Costs now match Watercare's bills to the cent
 
 - The water, wastewater and fixed charges now match Watercare's bills to the cent. The integration works out each bill the way Watercare does: each charge on the bill is rounded to the cent, the wastewater volume is rounded to a hundredth of a kilolitre first, and in a year that has a 29 February (Watercare's year runs from 1 July) the yearly fixed charge is shared over 366 days instead of 365. Before, most bills came out a few cents different from Watercare's. The **Last bill cost** sensor shows the new figure straight away.
 - Days already in your Energy dashboard keep the cost they were recorded with. The integration never changes stored history by itself, so only bills recorded after this update use the new arithmetic, and earlier days stay a few cents a bill different from your bills. If you want them recalculated, follow the manual rebuild in [docs/statistics.md](docs/statistics.md#when-the-rebuild-is-skipped): it deletes and re-imports the Watercare statistics, so export them first, and removing and re-adding Watercare resets its options, so note any prices or wastewater ratio you entered.
-- Re-authentication and reconfiguration no longer suggest adding a different Watercare account as a new entry, which Home Assistant refuses because only one Watercare entry is allowed. They now say to remove Watercare and add it again to switch accounts. The README's new **Switching accounts** section says what that does to the stored statistics: depending on the new account's bills, the old account's history is either kept, with the new account's days added after it and a repair notice, or replaced.
+
+### Clearer messages and repair notices
+
+- When Watercare's service says it is down for maintenance, setup now says **Watercare is down for maintenance** instead of saying it cannot connect. If it happens once Watercare is set up, the sensors show as unavailable and the integration tries again by itself, as before. If Home Assistant starts while Watercare is down for maintenance, the same message appears where Home Assistant explains why Watercare is retrying its setup. If Watercare's sign-in page is down instead, setup still says it cannot connect, because that page does not say why.
+- If Watercare answers that its app needs updating, which most likely means its service has changed, Home Assistant shows a repair notice, **Watercare asks for a newer version**, under **Settings → System → Repairs**, and setup says the same. Until the integration is updated to match, no new bills arrive and the sensors show as unavailable; water use already recorded is kept. The notice goes away by itself once Watercare answers normally again.
 - If Watercare says your property has a smart water meter, or that your meter was replaced with one, Home Assistant now shows a repair notice, **Watercare smart meters are not supported yet**, under **Settings → System → Repairs**. The integration can only read bills for manually read meters for now, so no new bills appear: the bills from your old meter still show, and if there are none, Watercare fails to set up and keeps retrying. Before, nothing explained why. The notice goes away by itself if Watercare reports a manually read meter again.
-- The README now says that the integration's first update brings in every bill Watercare has, which on a real account goes back several years, and that the yearly view in Watercare's app shows calendar years (January to December). It no longer says Watercare gives no dollar figures: Watercare's account history lists the amount of each bill and payment, which the integration does not read yet.
+
+### Two sensors renamed
+
+- **Daily average** is now **Average daily usage**, and **Payment due** is now **Due date**, the names Watercare's app uses. On an installation set up before this version, the two sensors keep their entity IDs, `sensor.watercare_daily_average` and `sensor.watercare_payment_due`, so automations, scripts and dashboards that use them keep working; only the names shown change. A new installation gets `sensor.watercare_average_daily_usage` and `sensor.watercare_due_date`. The README's examples use the new IDs and say which to use on an older installation.
+
+### Other changes
+
+- Re-authentication and reconfiguration no longer suggest adding a different Watercare account as a new entry, which Home Assistant refuses because only one Watercare entry is allowed. They now say to remove Watercare and add it again to switch accounts. The README's new **Switching accounts** section says what that does to the stored statistics: depending on the new account's bills, the old account's history is either kept, with the new account's days added after it and a repair notice, or replaced.
+- The README now says that the integration's first update brings in every bill Watercare has, which on a real account goes back several years, and that the yearly view in Watercare's app shows calendar years (January to December).
 
 ## 1.5.1
 

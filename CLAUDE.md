@@ -27,7 +27,7 @@ Public HACS integration (`custom_components/watercare`, domain `watercare`). Rea
 ## Facts that are easy to get wrong
 
 - Watercare's mobile API only returns completed billing periods; dates are Auckland midnight in UTC; usage is in litres, in whole kilolitres for mechanical meters.
-- Watercare charges a whole bill at the prices in force when its billing period **starts** (`statistics.pricing_date`), so a bill spanning 1 July keeps the earlier year's prices. Checked against one real bill; see `docs/tariffs.md`.
+- Watercare charges a whole bill at the prices in force when its billing period **starts** (`statistics.pricing_date`), so a bill spanning 1 July keeps the earlier year's prices. Several real bills, including ones spanning 1 July in different years, match the integration's pricing to the cent; see `docs/tariffs.md`.
 - Sign-in is Azure AD B2C self-asserted (email and password); there is no password-grant policy. A missing `SETTINGS` object on the login page means maintenance, not bad credentials. Each sign-in gets its own session from `async_create_clientsession` (own cookie jar, `quote_cookie=False`), detached afterwards, never closed.
 - No API exposes prices. The Energy dashboard's water picker needs `unit_class="volume"`.
 - The usage and cost sensors deliberately have no state class; the external statistics feed the Energy dashboard.

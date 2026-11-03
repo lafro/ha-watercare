@@ -46,6 +46,9 @@ _TOKEN_EXPIRY_MARGIN: Final = 60
 _REDIRECT_STATUSES: Final = frozenset({200, 301, 302, 307, 308})
 _HTTP_OK: Final = 200
 _HTTP_UNAUTHORIZED: Final = 401
+# The ``error`` field Watercare's app reads in any answer, whatever its status.
+_SERVICE_MAINTENANCE: Final = "service_maintenance"
+_UPGRADE_REQUIRED: Final = "upgrade_required"
 REQUEST_TIMEOUT: Final = aiohttp.ClientTimeout(total=60)
 
 
@@ -62,6 +65,39 @@ class WatercareConnectionError(WatercareError):
 
     Home Assistant must not start reauthentication for these.
     """
+
+
+class WatercareMaintenanceError(WatercareConnectionError):
+    """Watercare says its service is down for maintenance."""
+
+
+class WatercareUpgradeRequiredError(WatercareConnectionError):
+    """Watercare asks for a newer version of its app.
+
+    Watercare's app shows a forced update for this. For the integration it
+    most likely means the service changed in a way this version may not
+    handle.
+    """
+
+
+def _raise_for_service_error(body: bytes) -> None:
+    """Raise for an answer whose ``error`` field names a service state.
+
+    Watercare's app checks this field in every answer, whatever its HTTP
+    status, which has not been seen for either state. A body that is not a
+    JSON object says nothing either way.
+    """
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        return
+    error = payload.get("error") if isinstance(payload, dict) else None
+    if error == _SERVICE_MAINTENANCE:
+        raise WatercareMaintenanceError("Watercare is down for maintenance")
+    if error == _UPGRADE_REQUIRED:
+        raise WatercareUpgradeRequiredError(
+            "Watercare asks for a newer version of its app"
+        )
 
 
 def _code_verifier() -> str:
@@ -348,17 +384,20 @@ class WatercareApi:
                     headers={"authorization": f"Bearer {self._access_token}"},
                     timeout=REQUEST_TIMEOUT,
                 ) as response:
-                    if response.status == _HTTP_OK:
-                        return await response.json(content_type=None)
                     status = response.status
+                    body = await response.read()
             except (aiohttp.ClientError, TimeoutError) as err:
                 raise WatercareConnectionError(
                     f"Watercare API request failed: {type(err).__name__}"
                 ) from err
-            except ValueError as err:
-                raise WatercareConnectionError(
-                    "Watercare API returned malformed JSON"
-                ) from err
+            _raise_for_service_error(body)
+            if status == _HTTP_OK:
+                try:
+                    return json.loads(body)
+                except ValueError as err:
+                    raise WatercareConnectionError(
+                        "Watercare API returned malformed JSON"
+                    ) from err
             if status == _HTTP_UNAUTHORIZED and attempt == 0:
                 _LOGGER.debug("Watercare rejected the access token; renewing it")
                 self._access_token = None
@@ -388,3 +427,9 @@ class WatercareApi:
         account = self._account or await self.async_get_account()
         number = quote(account.account_number, safe="")
         return await self._async_get(f"v1/usage/{number}/mechanicalmonthly")
+
+    async def async_get_transactions(self) -> Any:
+        """Fetch the account's bills and payments, with their amounts."""
+        account = self._account or await self.async_get_account()
+        number = quote(account.account_number, safe="")
+        return await self._async_get(f"v1/account/{number}/transactions")

@@ -15,8 +15,15 @@ from custom_components.watercare.api import (
     WatercareApi,
     WatercareAuthError,
     WatercareConnectionError,
+    WatercareMaintenanceError,
+    WatercareUpgradeRequiredError,
 )
-from custom_components.watercare.models import AccountSummary, parse_billing_periods
+from custom_components.watercare.models import (
+    AccountSummary,
+    bill_period,
+    parse_billing_periods,
+    parse_bills,
+)
 
 from .watercare_http import (
     ACCOUNT_NUMBER,
@@ -25,10 +32,12 @@ from .watercare_http import (
     ISSUE_DAYS,
     METER_NUMBER,
     PASSWORD,
+    PAYMENT_DAYS,
     SECOND_ACCOUNT_NUMBER,
     SECOND_METER_NUMBER,
     FakeWatercare,
     Response,
+    bill_amount,
     bills,
     challenge_of,
     operation,
@@ -154,6 +163,54 @@ async def test_watercare_down_answers_every_api_call_with_its_status() -> None:
     assert fake.log[-1] == {"operation": "account", "status": 503}
     fake.api_status = None
     assert (await api.async_get_account()).account_number == ACCOUNT_NUMBER
+
+
+@pytest.mark.parametrize(
+    ("error", "status", "raised"),
+    [
+        ("service_maintenance", None, WatercareMaintenanceError),
+        ("service_maintenance", 200, WatercareMaintenanceError),
+        ("upgrade_required", 426, WatercareUpgradeRequiredError),
+    ],
+)
+async def test_an_error_body_answers_every_api_call(
+    error: str, status: int | None, raised: type[WatercareConnectionError]
+) -> None:
+    fake = FakeWatercare(api_error=error, api_status=status)
+    api, _stored = _api(fake)
+    with pytest.raises(raised):
+        await api.async_get_account()
+    assert fake.log[-1] == {"operation": "account", "status": status or 503}
+    fake.api_error = fake.api_status = None
+    assert (await api.async_get_account()).account_number == ACCOUNT_NUMBER
+
+
+async def test_the_transactions_list_each_bill_and_its_payment() -> None:
+    fake = FakeWatercare(as_of=_TODAY)
+    api, _stored = _api(fake)
+    payload = await api.async_get_transactions()
+    issued = bills(_TODAY)
+    items = payload["items"]
+    # Newest first, as Watercare's app lists them.
+    assert [item["date"] for item in items] == sorted(
+        (item["date"] for item in items), reverse=True
+    )
+    kinds = [item["type"] for item in items]
+    assert kinds.count("bill") == len(issued)
+    paid = [b for b in issued if b.end + timedelta(ISSUE_DAYS + PAYMENT_DAYS) <= _TODAY]
+    assert kinds.count("payment") == len(paid)
+    assert {item["accountNumber"] for item in items} == {ACCOUNT_NUMBER}
+    # Each bill reads as issued ISSUE_DAYS after its period, which it matches.
+    periods = parse_billing_periods(await api.async_get_billing_periods()).periods
+    parsed = parse_bills(payload)
+    assert [bill.amount for bill in parsed] == [bill_amount(b) for b in issued]
+    for bill, period in zip(parsed, periods, strict=True):
+        assert bill.date == period.end + timedelta(ISSUE_DAYS)
+        assert bill_period(bill, periods) == period
+    assert _operations(fake)[-3:] == ["account", "transactions", "billing_periods"]
+    # A withheld bill has no transaction either.
+    fake.withheld = 1
+    assert len(parse_bills(await api.async_get_transactions())) == len(issued) - 1
 
 
 async def test_a_restarted_fake_takes_the_stored_refresh_token() -> None:

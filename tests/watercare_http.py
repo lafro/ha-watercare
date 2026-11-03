@@ -4,8 +4,8 @@ It answers what the integration's client (``custom_components/watercare/
 api.py``) sends, the way the services do: Watercare's Azure AD B2C sign-in
 (the login page with its ``SETTINGS`` object, the email and password check,
 the confirmation's redirect to the app with an authorisation code, and the
-PKCE code exchange), the token refresh, and the customer-app API's account
-and billing-period calls. ``FakeWatercare`` stands in for an aiohttp
+PKCE code exchange), the token refresh, and the customer-app API's account,
+billing-period and transactions calls. ``FakeWatercare`` stands in for an aiohttp
 session (``request``, ``get`` and ``post`` return a response to use with
 ``async with``), so the real client, coordinator and config flow run
 unchanged; ``tests/watercare_standin.py`` puts it behind aiohttp in a
@@ -21,8 +21,10 @@ The bills are a function of the date alone (``bills``): the meter is read
 once a month, from 3 June 2024, and a bill is issued a few days after its
 reading. Neighbouring bills differ in length and volume, and one spans
 1 July, so a day shifted, counted twice or priced in the wrong year shows in
-the statistics. Every value is synthetic, the payload builders the tests
-share (``account_payload``, ``api_period``) included.
+the statistics. The transactions list each bill on the day it is issued,
+with a made-up amount (``bill_amount``), and its payment two weeks later.
+Every value is synthetic, the payload builders the tests share
+(``account_payload``, ``api_period``, ``api_transaction``) included.
 """
 
 from __future__ import annotations
@@ -52,6 +54,8 @@ PASSWORD: Final = "synthetic-password"
 FIRST_READING: Final = date(2024, 6, 3)
 # A bill is issued, and the API returns it, this many days after its reading.
 ISSUE_DAYS: Final = 5
+# A bill is paid this many days after it is issued.
+PAYMENT_DAYS: Final = 14
 ACCESS_LIFETIME_S: Final = 3600
 _ONE_DAY: Final = timedelta(days=1)
 _ACCOUNTS: Final = {
@@ -62,6 +66,7 @@ _HTTP_OK: Final = 200
 _HTTP_FOUND: Final = 302
 _HTTP_BAD_REQUEST: Final = 400
 _HTTP_UNAUTHORIZED: Final = 401
+_HTTP_SERVICE_UNAVAILABLE: Final = 503
 _MAINTENANCE_PAGE: Final = (
     b"<html><head><title>Service unavailable</title></head>"
     b"<body><h1>Synthetic maintenance page</h1></body></html>"
@@ -131,6 +136,24 @@ def api_period(
     }
 
 
+def api_transaction(
+    day: date,
+    amount: float,
+    *,
+    kind: str = "bill",
+    balance: float = 0,
+    number: str = ACCOUNT_NUMBER,
+) -> dict[str, Any]:
+    """Return one transactions item, dated as the billing periods are."""
+    return {
+        "accountNumber": number,
+        "date": api_date(day),
+        "type": kind,
+        "amount": amount,
+        "balance": balance,
+    }
+
+
 # --------------------------------------------------------------------- bills
 
 
@@ -151,6 +174,11 @@ class Bill:
     def payload(self) -> dict[str, Any]:
         """Return the bill as a mechanicalmonthly item."""
         return api_period(self.start, self.end, self.litres, reading=self.reading)
+
+
+def bill_amount(bill: Bill) -> float:
+    """Return the made-up amount a synthetic bill charges."""
+    return round(40 + bill.litres / 1000 * 5.25, 2)
 
 
 def reading_day(year: int, month: int) -> date:
@@ -254,8 +282,8 @@ def operation(method: str, url: str) -> str | None:
     """Return the name of the request the client sends to ``url``, or None.
 
     ``authorize``, ``self_asserted``, ``confirmed`` and ``token`` are the
-    sign-in's four steps, ``refresh`` the token refresh, and ``account`` and
-    ``billing_periods`` the API's calls.
+    sign-in's four steps, ``refresh`` the token refresh, and ``account``,
+    ``billing_periods`` and ``transactions`` the API's calls.
     """
     target = URL(url)
     path = target.path.lower()
@@ -281,6 +309,8 @@ def operation(method: str, url: str) -> str | None:
             and parts[3] == ("mechanicalmonthly")
         ):
             return "billing_periods"
+        if len(parts) == 4 and parts[:2] == ["v1", "account"]:
+            return "transactions" if parts[3] == "transactions" else None
     return None
 
 
@@ -345,7 +375,10 @@ class FakeWatercare:
     one ``password``. Tokens of an earlier ``generation`` are refused: the
     API answers 401 and the refresh 400. ``api_status``, when set, is the
     status every API request gets (a maintenance page), as when Watercare is
-    down; the sign-in still works. The newest ``withheld`` bills are not
+    down; the sign-in still works. ``api_error``, when set, is the ``error``
+    field of a JSON body every API request gets instead, with ``api_status``
+    or else 503, as Watercare's app expects for its maintenance and forced
+    update. The newest ``withheld`` bills are not
     issued yet. ``as_of`` is the date the bills are issued up to (today in
     Auckland if None). All of them may change between requests.
 
@@ -358,6 +391,7 @@ class FakeWatercare:
     password: str = PASSWORD
     generation: int = 1
     api_status: int | None = None
+    api_error: str | None = None
     withheld: int = 0
     as_of: date | None = None
     log: list[dict[str, Any]] = field(default_factory=list)
@@ -384,7 +418,7 @@ class FakeWatercare:
         headers = CIMultiDict(options.get("headers") or {})
         form = dict(options.get("data") or {})
         note: dict[str, Any] = {}
-        if name in {"account", "billing_periods"}:
+        if name in {"account", "billing_periods", "transactions"}:
             response = self._api(name, url, headers, note)
         elif name == "authorize":
             response = self._authorize(query)
@@ -519,6 +553,9 @@ class FakeWatercare:
     # ------------------------------------------------------------------- API
 
     def _api(self, name: str, url: str, headers: Any, note: dict[str, Any]) -> Response:
+        if self.api_error is not None:
+            status = self.api_status or _HTTP_SERVICE_UNAVAILABLE
+            return json_response({"error": self.api_error}, status=status)
         if self.api_status is not None:
             return html_response(_MAINTENANCE_PAGE, status=self.api_status)
         bearer = str(headers.get("authorization", ""))
@@ -542,4 +579,21 @@ class FakeWatercare:
         asked = URL(url).path.strip("/").split("/")[2]
         if asked != token.account:
             raise AssertionError("bills of an account the token does not hold")
+        if name == "transactions":
+            return json_response({"items": self.transactions(token.account)})
         return json_response([bill.payload() for bill in reversed(self.bills())])
+
+    def transactions(self, number: str) -> list[dict[str, Any]]:
+        """Return the issued bills and their payments so far, newest first."""
+        today = self.as_of or auckland_today()
+        items: list[dict[str, Any]] = []
+        for bill in self.bills():
+            issued = bill.end + timedelta(days=ISSUE_DAYS)
+            amount = bill_amount(bill)
+            items.append(api_transaction(issued, amount, balance=amount, number=number))
+            paid = issued + timedelta(days=PAYMENT_DAYS)
+            if paid <= today:
+                items.append(
+                    api_transaction(paid, amount, kind="payment", number=number)
+                )
+        return items[::-1]

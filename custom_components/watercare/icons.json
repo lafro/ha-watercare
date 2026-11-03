@@ -7,6 +7,9 @@
       "last_bill_cost": {
         "default": "mdi:cash"
       },
+      "last_bill_amount": {
+        "default": "mdi:receipt-text"
+      },
       "daily_average": {
         "default": "mdi:water-percent"
       },

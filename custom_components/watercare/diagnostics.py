@@ -83,6 +83,12 @@ async def async_get_config_entry_diagnostics(
                     "reading_type": period.reading_type,
                 },
                 "latest_cost_available": data.latest_cost is not None,
+                "last_bill": {
+                    "available": data.last_bill is not None,
+                    "date": data.last_bill.date.isoformat() if data.last_bill else None,
+                    "matched_period": data.last_bill_period is not None,
+                    "fetch_failed": data.last_bill_fetch_failed,
+                },
                 "missing_tariff_year": (
                     financial_year_label(missing_tariff_year)
                     if missing_tariff_year is not None

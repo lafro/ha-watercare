@@ -1,6 +1,6 @@
 # History and decisions
 
-Where the code came from, what changed and why, and the problems already solved, as of 1.5.1. Tags are explained in [README.md](README.md#accuracy-tags). The detail behind each step is in the other pages; this one is the "why".
+Where the code came from, what changed and why, and the problems already solved, as of 1.6.0. Tags are explained in [README.md](README.md#accuracy-tags). The detail behind each step is in the other pages; this one is the "why".
 
 ## Where this started
 
@@ -31,9 +31,13 @@ Releases up to 1.4.1 came from a GitHub fork of the original. That history is no
 - **1.5.0** is the first release from this standalone repository (not a GitHub fork), whose first commit imports 1.4.1's code with synthetic test data. The domain, entity unique ids and statistic ids are unchanged, so existing installations keep their entities, history and Energy dashboard configuration. It changed the statistics model (daily rows, each bill at its own year's prices, appended rather than recomputed, a one-off rebuild), replaced the flat price options with Watercare's published prices, and brought the project up to a stricter standard: typed models, a reconfigure step, a stored refresh token, privacy-safe diagnostics and logs, strict typing, a 95% per-module branch-coverage gate, snapshot tests, actions pinned to commits, and a gated Release workflow. It also removed the smart-meter seam. Details: [CHANGELOG](../CHANGELOG.md), [statistics.md](statistics.md), [tariffs.md](tariffs.md).
 - **1.5.1** stopped setup from waiting for the recorder. 1.5.0's rebuild held Home Assistant's start-up for 5 minutes and could leave the statistics empty; the statistics now run in the background after start-up. Details: [statistics.md](statistics.md#start-up-and-the-recorder).
 
+## 1.6.0
+
+- **1.6.0** prices each bill as Watercare does, to the cent; shows the real amount of the latest bill, read from the app's API with the existing sign-in ([Decisions](#decisions)); names Watercare's maintenance answer, and raises a repair notice when Watercare asks for a newer app or reports a smart meter; and gives two sensors the names Watercare's app uses, keeping existing entity ids. Details: [CHANGELOG](../CHANGELOG.md).
+
 ## Decisions
 
-The ones worth remembering, with their status in 1.5.1.
+The ones worth remembering, with their status in 1.6.0.
 
 **Mechanical meters only; smart meters removed.** Only the mechanical path can be tested against a real account. The smart-meter paths were inherited, unverified, and had defects: wrong period naming, an assumed payload shape and a time-zone bug in the daily path. Shipping confident-looking untested code was judged worse than not shipping it, so a smart-meter user gets nothing rather than something that might be wrong. 1.4.x kept a seam to re-add them; 1.5.0 removed it, and re-adding starts from a real smart-meter response. Still in force. ✅
 
@@ -41,7 +45,7 @@ The ones worth remembering, with their status in 1.5.1.
 
 **Costs are calculated, from published prices.** Neither of Watercare's APIs exposes prices ✅ (August 2026). Up to 1.4.x the user entered one flat set of prices; from 1.5.0 each release carries Watercare's published prices for every financial year since 2018/19, with sources ([tariffs.md](tariffs.md)), and the user normally enters prices only for a year the release does not know yet. The options also take the current year's prices when the release already has them, and keep them as an override for that year if they differ from the published ones ([architecture.md](architecture.md#setup-options-re-authentication-and-repairs)). Still in force. ✅ (code)
 
-**Watercare's web portal is not used for dollar totals.** The My Account portal's own API has an invoice history with real totals, but using it would add a second sign-in flow against an undocumented API to get a number the calculation already matched to the cent on the bills checked. Revisit only if calculated costs drift from the bills. Still in force. ✅ (decision)
+**Real bill amounts come from the app's API, not the web portal.** The My Account portal's own API has an invoice history with real totals, but using it would add a second sign-in flow against an undocumented API. Watercare's app API, which the integration already signs in to, lists each bill and payment with its amount, so from 1.6.0 the **Last bill amount** sensor reads the latest bill's amount from there, with no second sign-in. The costs in the Energy dashboard are still calculated: the app gives a bill's total, not its water, wastewater and fixed charges, and the calculation matches every real bill checked to the cent ([tariffs.md](tariffs.md#how-a-bill-is-priced)). The portal stays unused. ✅ (code)
 
 **The meter number is a sensor, not the device's serial number.** It identifies a water meter, not the account the device represents, so the device is a service with no serial number and the meter number has its own diagnostic sensor. From 1.5.0 it is no longer copied into the usage sensor's attributes. Still in force. ✅ (code)
 
@@ -49,7 +53,7 @@ The ones worth remembering, with their status in 1.5.1.
 
 **Spread each bill over its days.** Before 1.5.0 the whole bill landed on the hour after its period ended, which showed nothing for weeks and then a spike, and booked most of a bill to the next month. A mechanical meter is read about monthly in whole kilolitres, so an even daily split adds no false precision. ✅ ([statistics.md](statistics.md#spreading-each-bill-over-its-days))
 
-**Price a whole bill at the prices in force when it starts.** That is how Watercare charged the one bill spanning 1 July that has been checked; a split by day was about 3.7% too high. The rule is one function, `pricing_date`, so it can change if another bill shows otherwise. ⚠️ (one bill; [tariffs.md](tariffs.md#how-a-bill-is-priced))
+**Price a whole bill at the prices in force when it starts.** That is how Watercare charged every real bill spanning 1 July that has been checked, in different years; on the first one, a split by day was about 3.7% too high. Several real bills now match the integration's pricing to the cent. The rule is one function, `pricing_date`, so it can change if a bill shows otherwise. ✅ (bills; [tariffs.md](tariffs.md#how-a-bill-is-priced))
 
 **Pause costs rather than guess.** A year without known prices stops the cost statistics at its first bill and raises a repair notice; the forms never pre-fill an unknown year's prices, because a price saved by accident would resume the costs and stay in them. ✅ (code)
 
@@ -57,7 +61,7 @@ The ones worth remembering, with their status in 1.5.1.
 
 **Never wait for the recorder in setup.** The recorder only works through its queue once Home Assistant has started, and start-up waits for config entries being set up. From 1.5.1 the statistics run in a background task after start-up. ✅ (code; [statistics.md](statistics.md#start-up-and-the-recorder))
 
-**Releases are immutable; defects are fixed forward.** On the fork, early iteration produced several same-day releases, which were consolidated into one current release. From 1.5.0, tags and releases cannot be moved, replaced or deleted, and a defect gets a new patch version ([release.md](release.md)). ✅
+**Releases are immutable; defects are fixed forward.** On the fork, early iteration produced several same-day releases, which were consolidated into one current release. From 1.5.0, tags and releases cannot be moved, replaced or deleted, and a defect gets a new patch version, or, in a beta, the next beta of the same version ([release.md](release.md)). ✅
 
 ## Problems already solved
 

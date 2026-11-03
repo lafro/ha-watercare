@@ -1,6 +1,6 @@
 # Architecture
 
-How the code in `custom_components/watercare/` is put together, as of 1.5.1. Tags are explained in [README.md](README.md#accuracy-tags). Code claims marked ✅ were checked against 1.5.1 on 9 October 2026.
+How the code in `custom_components/watercare/` is put together, as of 1.6.0. Tags are explained in [README.md](README.md#accuracy-tags). Code claims marked ✅ were checked against 1.5.1 on 9 October 2026, and those about 1.6.0's changes against 1.6.0 on 2 November 2026.
 
 What users see is in the [README](../README.md). The statistics model has its own page, [statistics.md](statistics.md), and so do the prices, [tariffs.md](tariffs.md); this page links to them rather than repeating them.
 
@@ -11,13 +11,13 @@ What users see is in the [README](../README.md). The statistics model has its ow
 | `manifest.json` | A `service` integration polling the cloud (`cloud_polling`), one config entry per Home Assistant instance (`single_config_entry`). Depends on `recorder`; `requirements` is empty, because Home Assistant already ships everything the code imports. |
 | `const.py` | Domain, the Auckland time zone, the 12-hour poll interval, config keys, the statistics-format marker, the option keys 1.4.x wrote, the four statistic ids, the repair issue ids and documentation links. |
 | `__init__.py` | Entry setup and unload, the config-entry migration from 1.4.x, the entity-registry fixes carried from earlier releases, and starting the statistics once Home Assistant has started. |
-| `api.py` | The customer-app API client: Azure AD B2C sign-in, token refresh, the account record and the billing periods, and the two error types Home Assistant must tell apart. |
+| `api.py` | The customer-app API client: Azure AD B2C sign-in, token refresh, the account record, the billing periods and the bills and payments, and the error types Home Assistant must tell apart. |
 | `session.py` | A short-lived session from Home Assistant's own helper for each sign-in, with a cookie jar of its own. |
-| `models.py` | Typed, tolerant parsing of the account record and the billing periods. Raw payloads are not kept, so they cannot reach logs or diagnostics. |
-| `coordinator.py` | The `DataUpdateCoordinator`. A poll fetches the account and the bills and prices the latest bill; the statistics update follows in a background task. Raises and clears the tariff and smart-meter repair issues. |
+| `models.py` | Typed, tolerant parsing of the account record, the billing periods and the issued bills, and the match between a bill and its billing period. Raw payloads are not kept, so they cannot reach logs or diagnostics. |
+| `coordinator.py` | The `DataUpdateCoordinator`. A poll fetches the account and the bills, prices the latest bill and reads the amount of the latest issued bill; the statistics update follows in a background task. Raises and clears the tariff, smart-meter and newer-version repair issues. |
 | `statistics.py` | The statistics model: each bill spread over its days, priced at the tariff of its start date, appended after the stored history; the one-off rebuild from 1.4.x and the check that it would lose nothing. |
 | `tariffs.py` | Watercare's published residential prices by financial year, and the schedule that combines them with prices entered in the options. |
-| `sensor.py` | Eleven sensors, each a `SensorEntityDescription`, on one service device. |
+| `sensor.py` | Twelve sensors, each a `SensorEntityDescription`, on one service device. |
 | `config_flow.py` | Setup, re-authentication, reconfiguration, and the options (wastewater ratio and the current financial year's prices). |
 | `repairs.py` | The fix flow that asks for a financial year's prices. |
 | `diagnostics.py` | Diagnostics with credentials, identifiers, usage and costs left out. |
@@ -37,6 +37,8 @@ Home Assistant, every 12 hours
     ├─ api.async_get_billing_periods()    GET v1/usage/{account}/mechanicalmonthly
     ├─ models.parse_billing_periods()     skip malformed periods, drop duplicates, sort
     ├─ statistics.bill_cost(latest bill)  at the tariff of the bill's start date
+    ├─ api.async_get_transactions()       GET v1/account/{account}/transactions
+    │     (the latest issued bill's amount; a failure keeps the last one read since start-up and never fails the poll)
     └─ returns WatercareData ──▶ the sensors (CoordinatorEntity)
           │
           └─ hands the bills to the statistics task, which runs only after Home Assistant has started
@@ -49,8 +51,9 @@ Home Assistant, every 12 hours
 
 ✅ (code)
 
-- The account record is fetched once per poll, and the bills request uses the account number from it. ✅ (code)
-- Parsing is tolerant: unknown keys are ignored, and both timestamp forms Watercare sends are accepted (milliseconds on usage dates, none on the account's due date). A billing period is skipped only when it is not an object, a date is missing or unparseable, the end is before the start, or `waterUsage` is not a number, negative or non-finite (`NaN`, `Infinity`). A `null` or missing `waterUsage` counts as 0 litres and the period is kept ([known-unknowns.md](known-unknowns.md#assumptions-the-code-acts-on), A8). A `numberOfDays` that is missing, not a finite number or below 1 falls back to counting the days, both ends included, and a `dailyAverage` that is not a finite number becomes empty. A repeated period (same start and end) is kept once. ✅ (code)
+- The account record is fetched once per poll, and the bills and transactions requests use the account number from it. ✅ (code)
+- The transactions list holds bills and payments with their dates and amounts but no billing period. The latest bill is matched to the latest billing period that ended on or up to seven days before the bill's date, read as an Auckland date ([known-unknowns.md](known-unknowns.md#known-unknowns)). A bill with no such period still shows its amount, without a period. An item whose date has no Auckland date (a `9999-12-31` placeholder, say) is skipped. Bills are ordered by their timestamps, then their amounts, so of two bills on the same date the newest does not depend on the order Watercare lists them in. If the transactions request fails, or its answer cannot be read for any reason, the sensor keeps the amount read earlier since start-up, or stays unknown if there is none, and the poll goes on. ✅ (code)
+- Parsing is tolerant: unknown keys are ignored, and both timestamp forms Watercare sends are accepted (milliseconds on usage dates, none on the account's due date). A billing period is skipped only when it is not an object, a date is missing, unparseable or has no Auckland date (a `9999-12-31` placeholder, say), the end is before the start or on or after today's Auckland date, or `waterUsage` is not a number, negative or non-finite (`NaN`, `Infinity`). The date bound is a precaution: the endpoint returns only completed periods, and no unfinished one has been seen. If one were ever listed it would be dated today, and its partial usage would stay in the append-only history; a later end would spread usage over days that have not happened. So a period is used only once its end is before today, which means a period read today loads the next day. A `null` or missing `waterUsage` counts as 0 litres and the period is kept ([known-unknowns.md](known-unknowns.md#assumptions-the-code-acts-on), A8). A `numberOfDays` that is missing, not a finite number or below 1 falls back to counting the days, both ends included, and a `dailyAverage` that is not a finite number becomes empty. A repeated period (same start and end) is kept once. ✅ (code)
 - Entities are thin. Each sensor is a description with a `value_fn` over the poll's `WatercareData`; the usage sensor also has an `attributes_fn` that keeps the 1.4.x attribute names for dashboards built on them. Unique ids are `<entry id>_<key>`. ✅ (code)
 
 ## Sign-in and tokens
@@ -66,11 +69,13 @@ Home Assistant, every 12 hours
 | What went wrong | Raised as | The coordinator raises | Home Assistant then |
 |---|---|---|---|
 | Watercare rejected the email or password, refused the sign-in, returned no authorisation code or access token, or answered 401 to a token it had just issued | `WatercareAuthError` | `ConfigEntryAuthFailed` | starts re-authentication |
-| Network error or timeout, an HTTP error, a maintenance page, malformed JSON, no account | `WatercareConnectionError` | `UpdateFailed` (`cannot_connect`) | marks the sensors unavailable and tries again at the next poll |
+| Watercare answers with `"error": "service_maintenance"`, whatever the HTTP status | `WatercareMaintenanceError` | `UpdateFailed` (`service_maintenance`) | marks the sensors unavailable and tries again at the next poll; setup shows "Watercare is down for maintenance" |
+| Watercare answers with `"error": "upgrade_required"`, whatever the HTTP status | `WatercareUpgradeRequiredError` | `UpdateFailed` (`upgrade_required`) and the non-fixable repair issue `upgrade_required_<entry id>` | as above; the issue goes once a poll gets the account and the bills again |
+| Network error or timeout, any other HTTP error, a maintenance page at sign-in, malformed JSON, no account | `WatercareConnectionError` | `UpdateFailed` (`cannot_connect`) | as above |
 | The billing periods are not a list | `WatercarePayloadError` | `UpdateFailed` (`unexpected_response`) | as above |
 | No usable billing period | (none) | `UpdateFailed` (`no_billing_periods`) | as above |
 
-✅ (code). Telling the first two rows apart is what stops a Watercare outage from asking the user for their password. During setup, Home Assistant turns `UpdateFailed` into a setup retry.
+✅ (code). The two service errors are subclasses of `WatercareConnectionError`, so anything that handles a connection error handles them too. Telling `WatercareAuthError` apart from the connection errors is what stops a Watercare outage from asking the user for their password. During setup, Home Assistant turns `UpdateFailed` into a setup retry.
 
 A failed statistics update does not fail the poll or the entry: it is logged and the next poll tries again (1.5.1). ✅ (code)
 
@@ -88,7 +93,7 @@ The details and the reasoning are in [statistics.md](statistics.md). In short �
 
 A `state_class` makes Home Assistant's recorder compile long-term statistics for the entity itself, on top of the external ones above. **Last bill usage** and **Last bill cost** hold per-bill totals that go up and down from one bill to the next; they are not counters. With `TOTAL_INCREASING` or `TOTAL`, the recorder compiled corrupt statistics for them (spurious resets and net deltas), which also appeared in the Energy dashboard's water picker as a second, wrongly summed source. Without a state class there are no such statistics, and the four `watercare:*` statistics are the only long-term record. ✅ (review finding and the running installation, 8 August 2026; the state class was removed in 1.4.x)
 
-The account sensors (balance, amount due, overdue amount) have no state class either. **Daily average** has `MEASUREMENT`: it is a per-day rate, not a total. ✅ (code)
+**Last bill amount** and the account sensors (balance, amount due, overdue amount) have no state class either. **Average daily usage** has `MEASUREMENT`: it is a per-day rate, not a total. ✅ (code)
 
 ## Config entry
 
@@ -102,10 +107,10 @@ The account sensors (balance, amount due, overdue amount) have no state class ei
 
 ## Setup, options, re-authentication and repairs
 
-- **Setup** signs in before creating the entry, sets the account number as the unique id, and shows `invalid_auth`, `cannot_connect` or `unknown` on failure. Only one entry is allowed: the statistic ids are shared, so a second account would overwrite the first one's history. ✅ (code)
+- **Setup** signs in before creating the entry, sets the account number as the unique id, and shows `invalid_auth`, `service_maintenance`, `upgrade_required`, `cannot_connect` or `unknown` on failure. Only one entry is allowed: the statistic ids are shared, so a second account would overwrite the first one's history. ✅ (code)
 - **Options** hold the wastewater ratio and the current financial year's prices, pre-filled from the published table or an earlier entry. For a year with no known prices the fields start empty (the `new_year` step), and all three or none must be entered, so saving the form unchanged can never store last year's prices as a guess. Saving reloads the entry. ✅ (code)
 - **Re-authentication** asks for the current password when Watercare rejects the stored one. **Reconfigure** changes the email and password for the same account. ✅ (code)
-- **Repairs:** when the cost statistics pause for a year without prices, or the current year has none yet, a fixable repair issue asks for that year's prices; fixing it stores them for that year only and reloads the entry. A second, non-fixable issue explains a skipped rebuild ([statistics.md](statistics.md#when-the-rebuild-is-skipped)), and a third says smart meters are not supported yet ([Smart meters](#smart-meters)). Removing the entry deletes all three and keeps the statistics. ✅ (code)
+- **Repairs:** when the cost statistics pause for a year without prices, or the current year has none yet, a fixable repair issue asks for that year's prices; fixing it stores them for that year only and reloads the entry. A second, non-fixable issue explains a skipped rebuild ([statistics.md](statistics.md#when-the-rebuild-is-skipped)), a third says smart meters are not supported yet ([Smart meters](#smart-meters)), and a fourth says Watercare asked for a newer version of its app ([Errors](#errors)). Removing the entry deletes all four and keeps the statistics. ✅ (code)
 
 ## Entity-registry fixes from earlier releases (`__init__.py`)
 
@@ -117,7 +122,7 @@ On every setup ✅ (code):
 
 ## Diagnostics
 
-Diagnostics get pasted into public issues, so they hold only shapes, counts, dates and statuses: the entry version, its data with the username, password, refresh token and identifiers redacted, the wastewater ratio, which years have entered prices, the latest published year, the coordinator's status, and the latest bill's dates and reading type. No account or meter number, balance, usage or cost. ✅ (code; `tests/snapshots/test_diagnostics.ambr`)
+Diagnostics get pasted into public issues, so they hold only shapes, counts, dates and statuses: the entry version, its data with the username, password, refresh token and identifiers redacted, the wastewater ratio, which years have entered prices, the latest published year, the coordinator's status, the latest bill's dates and reading type, and whether the latest issued bill was read, with its date and whether a billing period matched it. No account or meter number, balance, usage, cost or bill amount. ✅ (code; `tests/snapshots/test_diagnostics.ambr`)
 
 ## Smart meters
 

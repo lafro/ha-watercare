@@ -85,6 +85,17 @@ def _round_rate(value: Any) -> float:
     return round(float(value), 4)
 
 
+def _bill_attributes(data: WatercareData) -> dict[str, Any]:
+    """Return the bill's date and the billing period it charges for."""
+    bill = data.last_bill
+    period = data.last_bill_period
+    return {
+        "bill_date": bill.date.isoformat() if bill else None,
+        "billing_period_start": period.start.isoformat() if period else None,
+        "billing_period_end": period.end.isoformat() if period else None,
+    }
+
+
 SENSORS: tuple[WatercareSensorDescription, ...] = (
     WatercareSensorDescription(
         key="usage",
@@ -104,6 +115,15 @@ SENSORS: tuple[WatercareSensorDescription, ...] = (
         value_fn=lambda data: (
             _round(data.latest_cost.total) if data.latest_cost else None
         ),
+    ),
+    WatercareSensorDescription(
+        key="last_bill_amount",
+        translation_key="last_bill_amount",
+        device_class=SensorDeviceClass.MONETARY,
+        native_unit_of_measurement="NZD",
+        suggested_display_precision=2,
+        value_fn=lambda data: _round(data.last_bill.amount) if data.last_bill else None,
+        attributes_fn=_bill_attributes,
     ),
     WatercareSensorDescription(
         key="daily_average",
@@ -226,7 +246,7 @@ class WatercareSensor(CoordinatorEntity[WatercareCoordinator], SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
-        """Return attributes, for the usage sensor only."""
+        """Return attributes, for the usage and last bill amount sensors."""
         if self.entity_description.attributes_fn is None:
             return None
         return self.entity_description.attributes_fn(self.coordinator.data)

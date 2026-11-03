@@ -39,8 +39,9 @@ The scenario is read from ``scenario.json`` in the folder on each request,
 so the runner can change it between steps without any API (``Scenario``):
 the logins Watercare knows and their password, the generation of sign-ins
 it honours (a new one ends every earlier sign-in, as a password change
-does), Watercare's API down with a status, how many of the newest bills are
-not issued yet, and the date the bills are issued up to.
+does), Watercare's API down with a status or an error in its answers (such
+as ``service_maintenance``), how many of the newest bills are not issued
+yet, and the date the bills are issued up to.
 
 The bills are a function of the date alone (``watercare_http.bills``), so a
 restarted Home Assistant sees the same history.
@@ -110,7 +111,9 @@ class Scenario:
     sign-ins: a new one ends every earlier sign-in, so the API refuses
     their access tokens (401) and the refresh their refresh tokens (400).
     ``api_status``, when set, is the status every API request gets, as when
-    Watercare is down. The newest ``withheld`` bills are not issued yet.
+    Watercare is down; ``api_error``, the ``error`` field of the JSON body
+    every API request gets instead (with ``api_status``, or else 503). The
+    newest ``withheld`` bills are not issued yet.
     ``as_of`` is the date the bills are issued up to (today in Auckland if
     None), so a run that crosses midnight sees the same bills.
     """
@@ -121,6 +124,7 @@ class Scenario:
     password: str = DEFAULT_PASSWORD
     generation: int = 1
     api_status: int | None = None
+    api_error: str | None = None
     withheld: int = 0
     as_of: date | None = None
 
@@ -132,12 +136,14 @@ class Scenario:
         if not isinstance(logins, dict):
             raise TypeError("logins maps each email to its account")
         status = data.get("api_status")
+        error = data.get("api_error")
         as_of = data.get("as_of")
         return cls(
             logins={str(email): str(account) for email, account in logins.items()},
             password=str(data.get("password", default.password)),
             generation=int(data.get("generation", default.generation)),
             api_status=None if status is None else int(status),
+            api_error=None if error is None else str(error),
             withheld=int(data.get("withheld", default.withheld)),
             as_of=None if as_of is None else date.fromisoformat(str(as_of)),
         )
@@ -149,6 +155,7 @@ class Scenario:
             "password": self.password,
             "generation": self.generation,
             "api_status": self.api_status,
+            "api_error": self.api_error,
             "withheld": self.withheld,
             "as_of": None if self.as_of is None else self.as_of.isoformat(),
         }
@@ -274,6 +281,7 @@ class StandIn:
         fake.password = scenario.password
         fake.generation = scenario.generation
         fake.api_status = scenario.api_status
+        fake.api_error = scenario.api_error
         fake.withheld = scenario.withheld
         fake.as_of = scenario.as_of
         return fake

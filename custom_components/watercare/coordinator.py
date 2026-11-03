@@ -15,7 +15,14 @@ from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
-from .api import WatercareApi, WatercareAuthError, WatercareConnectionError
+from .api import (
+    WatercareApi,
+    WatercareAuthError,
+    WatercareConnectionError,
+    WatercareError,
+    WatercareMaintenanceError,
+    WatercareUpgradeRequiredError,
+)
 from .const import (
     CONF_WASTEWATER_RATIO,
     DATA_STATISTICS_VERSION,
@@ -24,18 +31,23 @@ from .const import (
     ISSUE_REBUILD_SKIPPED,
     ISSUE_SMART_METER,
     ISSUE_TARIFF_MISSING,
+    ISSUE_UPGRADE_REQUIRED,
     NZ_TIMEZONE,
     SMART_METER_DOCS_URL,
     STATISTICS_DOCS_URL,
     STATISTICS_VERSION,
     TARIFF_DOCS_URL,
     UPDATE_INTERVAL,
+    UPGRADE_DOCS_URL,
 )
 from .models import (
     AccountSummary,
     BillingPeriod,
+    IssuedBill,
     WatercarePayloadError,
+    bill_period,
     parse_billing_periods,
+    parse_bills,
 )
 from .statistics import (
     BillCost,
@@ -74,6 +86,11 @@ class WatercareData:
     period_count: int
     skipped_periods: int
     duplicate_periods: int
+    last_bill: IssuedBill | None = None
+    """The newest bill in the account's transactions, kept from an earlier poll
+    when this one could not read them."""
+    last_bill_period: BillingPeriod | None = None
+    last_bill_fetch_failed: bool = False
 
 
 class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
@@ -119,6 +136,7 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
         self._statistics_started = False
         self._statistics_periods: tuple[BillingPeriod, ...] | None = None
         self._statistics_task: asyncio.Task[None] | None = None
+        self._last_bill: IssuedBill | None = None
 
     async def _async_update_data(self) -> WatercareData:
         """Fetch bills and the account; the statistics follow in the background."""
@@ -132,15 +150,27 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
             raise ConfigEntryAuthFailed(
                 translation_domain=DOMAIN, translation_key="auth_failed"
             ) from err
+        except WatercareMaintenanceError as err:
+            raise UpdateFailed(
+                translation_domain=DOMAIN, translation_key="service_maintenance"
+            ) from err
+        except WatercareUpgradeRequiredError as err:
+            self._async_check_upgrade(required=True)
+            raise UpdateFailed(
+                translation_domain=DOMAIN, translation_key="upgrade_required"
+            ) from err
         except WatercareConnectionError as err:
             raise UpdateFailed(
                 translation_domain=DOMAIN,
                 translation_key="cannot_connect",
                 translation_placeholders={"error": str(err)},
             ) from err
+        self._async_check_upgrade(required=False)
 
         try:
-            parsed = parse_billing_periods(payload)
+            parsed = parse_billing_periods(
+                payload, today=dt_util.now(NZ_TIMEZONE).date()
+            )
         except WatercarePayloadError as err:
             raise UpdateFailed(
                 translation_domain=DOMAIN, translation_key="unexpected_response"
@@ -150,8 +180,9 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
                 translation_domain=DOMAIN, translation_key="no_billing_periods"
             )
         if parsed.skipped or parsed.duplicates:
+            # Debug only: an unfinished period would be skipped on every poll.
             _LOGGER.debug(
-                "Ignored %d malformed and %d duplicate billing periods",
+                "Ignored %d unusable and %d duplicate billing periods",
                 parsed.skipped,
                 parsed.duplicates,
             )
@@ -160,6 +191,8 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
         latest = periods[-1]
         self._statistics_periods = periods
         self._async_schedule_statistics()
+        fetch_failed = not await self._async_update_last_bill()
+        last_bill = self._last_bill
 
         return WatercareData(
             account=account,
@@ -169,7 +202,33 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
             period_count=len(periods),
             skipped_periods=parsed.skipped,
             duplicate_periods=parsed.duplicates,
+            last_bill=last_bill,
+            last_bill_period=bill_period(last_bill, periods) if last_bill else None,
+            last_bill_fetch_failed=fetch_failed,
         )
+
+    async def _async_update_last_bill(self) -> bool:
+        """Read the newest bill's amount; return whether the transactions loaded.
+
+        The amount adds to the bills the poll already has, so a failure here
+        keeps the bill read before and never fails the poll.
+        """
+        try:
+            bills = parse_bills(await self.api.async_get_transactions())
+        except (WatercareError, WatercarePayloadError) as err:
+            _LOGGER.debug(
+                "Could not read the Watercare bills' amounts: %s", type(err).__name__
+            )
+            return False
+        except Exception as err:  # noqa: BLE001 - the amount never fails the poll
+            # Only the error's type: its message could quote the response.
+            _LOGGER.warning(
+                "Unexpected error reading the Watercare bills' amounts: %s",
+                type(err).__name__,
+            )
+            return False
+        self._last_bill = bills[-1] if bills else None
+        return True
 
     @callback
     def async_start_statistics(self) -> None:
@@ -326,6 +385,23 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
             severity=ir.IssueSeverity.WARNING,
             translation_key=ISSUE_SMART_METER,
             learn_more_url=SMART_METER_DOCS_URL,
+        )
+
+    @callback
+    def _async_check_upgrade(self, *, required: bool) -> None:
+        """Raise or clear the repair issue for Watercare asking for an update."""
+        issue_id = f"{ISSUE_UPGRADE_REQUIRED}_{self.config_entry.entry_id}"
+        if not required:
+            ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+            return
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            issue_id,
+            is_fixable=False,
+            severity=ir.IssueSeverity.ERROR,
+            translation_key=ISSUE_UPGRADE_REQUIRED,
+            learn_more_url=UPGRADE_DOCS_URL,
         )
 
     def _async_check_tariff(self, unpriced_year: int | None) -> int | None:

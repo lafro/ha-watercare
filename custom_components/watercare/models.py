@@ -10,12 +10,15 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
-from typing import Any
+from datetime import UTC, date, datetime, timedelta
+from typing import Any, Final
 
 from .const import NZ_TIMEZONE
 
 _CHANGED_TO_SMART = "transitionedMeterFromMMToSM"
+# A bill is issued on, or a few days after, the last day of its billing
+# period. A week leaves room without reaching back to the period before.
+BILL_ISSUE_DAYS: Final = timedelta(days=7)
 
 
 class WatercarePayloadError(ValueError):
@@ -26,7 +29,8 @@ def parse_timestamp(value: Any) -> datetime | None:
     """Parse a Watercare timestamp into an aware UTC datetime.
 
     Usage endpoints send milliseconds ("...T12:00:00.000Z"); the account
-    endpoint's due date does not ("...T23:59:59Z"). Accept both.
+    endpoint's due date does not ("...T23:59:59Z"). Accept both. A timestamp
+    with no UTC instant, such as "0001-01-01T00:00:00+13:00", is unparseable.
     """
     if not isinstance(value, str):
         return None
@@ -36,7 +40,10 @@ def parse_timestamp(value: Any) -> datetime | None:
         return None
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
+    try:
+        return parsed.astimezone(UTC)
+    except OverflowError:
+        return None
 
 
 def local_date(value: datetime) -> date:
@@ -78,8 +85,12 @@ class BillingPeriod:
         usage = _usage_litres(item.get("waterUsage"))
         if start_ts is None or end_ts is None or usage is None:
             return None
-        start = local_date(start_ts)
-        end = local_date(end_ts)
+        try:
+            start = local_date(start_ts)
+            end = local_date(end_ts)
+        except OverflowError:
+            # No Auckland date, such as a "9999-12-31T23:59:59Z" placeholder.
+            return None
         if end < start:
             return None
 
@@ -113,11 +124,16 @@ class ParsedPeriods:
     duplicates: int
 
 
-def parse_billing_periods(payload: Any) -> ParsedPeriods:
+def parse_billing_periods(payload: Any, *, today: date | None = None) -> ParsedPeriods:
     """Parse the mechanicalmonthly response.
 
     Duplicate periods (same start and end) are kept once, so a repeated item
-    can never be counted twice.
+    can never be counted twice. With ``today`` (an Auckland date), a period
+    that ends on or after it is skipped. The endpoint only returns completed
+    periods, so a later end is a placeholder or an unfinished period, whose
+    usage would be spread over days that have not happened. An unfinished
+    period would end today, and once stored its partial usage would stay in
+    the history, which only appends; a period read today loads tomorrow.
     """
     if not isinstance(payload, list):
         raise WatercarePayloadError("Billing periods payload is not a list")
@@ -127,7 +143,7 @@ def parse_billing_periods(payload: Any) -> ParsedPeriods:
     duplicates = 0
     for item in payload:
         period = BillingPeriod.from_json(item)
-        if period is None:
+        if period is None or (today is not None and period.end >= today):
             skipped += 1
             continue
         key = (period.start, period.end)
@@ -208,6 +224,62 @@ class AccountSummary:
             meter_number=meter_number,
             meter_changed_to_smart=changed_to_smart,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class IssuedBill:
+    """One bill from the account's transactions: the amount Watercare charged."""
+
+    date: date
+    amount: float
+
+
+def parse_bills(payload: Any) -> tuple[IssuedBill, ...]:
+    """Parse the bills in a transactions response, oldest first.
+
+    Payments and malformed items are skipped, and so is a date with no
+    Auckland date, such as a "9999-12-31T23:59:59Z" placeholder. A
+    transaction's date is a UTC timestamp; whether it is Auckland midnight of
+    the bill's date, as the billing periods' dates are, has not been seen, so
+    it is read as the Auckland date it falls on, which is the bill's date
+    either way. Bills are ordered by their timestamps, then their amounts, so
+    of two bills on the same date the newest is the same whatever order
+    Watercare lists them in.
+    """
+    items = payload.get("items") if isinstance(payload, dict) else None
+    if not isinstance(items, list):
+        raise WatercarePayloadError("Transactions payload has no list of items")
+    issued: list[tuple[datetime, IssuedBill]] = []
+    for item in items:
+        if not isinstance(item, dict) or str(item.get("type")).lower() != "bill":
+            continue
+        timestamp = parse_timestamp(item.get("date"))
+        amount = _optional_number(item.get("amount"))
+        if timestamp is None or amount is None:
+            continue
+        try:
+            day = local_date(timestamp)
+        except OverflowError:
+            continue
+        issued.append((timestamp, IssuedBill(day, amount)))
+    issued.sort(key=lambda entry: (entry[0], entry[1].amount))
+    return tuple(bill for _, bill in issued)
+
+
+def bill_period(
+    bill: IssuedBill, periods: tuple[BillingPeriod, ...]
+) -> BillingPeriod | None:
+    """Return the billing period a bill charges for, or None.
+
+    The transactions name no period, so a bill matches the latest period that
+    ends on its date or up to ``BILL_ISSUE_DAYS`` before it.
+    """
+    matches = [
+        period
+        for period in periods
+        if period.end <= bill.date <= period.end + BILL_ISSUE_DAYS
+    ]
+    return max(matches, key=lambda period: period.end, default=None)
 
 
 def _usage_litres(value: Any) -> int | None:
