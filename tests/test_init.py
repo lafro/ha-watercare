@@ -1,30 +1,19 @@
-"""Tests for setup, unload, entry migration and the coordinator."""
+"""Tests for setup, unload, the entry version guard and the coordinator."""
 
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from logging import WARNING
+from logging import ERROR, WARNING
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from freezegun.api import FrozenDateTimeFactory
-from homeassistant.components.recorder import Recorder
-from homeassistant.components.recorder import statistics as recorder_statistics
-from homeassistant.components.recorder.models import StatisticMeanType
-from homeassistant.components.recorder.statistics import (
-    async_add_external_statistics,
-)
 from homeassistant.config_entries import SOURCE_REAUTH, ConfigEntryState
-from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
+from homeassistant.const import CONF_USERNAME
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
-from pytest_homeassistant_custom_component.components.recorder.common import (
-    async_wait_recording_done,
-)
 from sqlalchemy.exc import OperationalError
 
 from custom_components.watercare import async_migrate_entry
@@ -36,7 +25,6 @@ from custom_components.watercare.api import (
     _default_sign_in_session,
 )
 from custom_components.watercare.const import (
-    ALL_STATISTIC_IDS,
     DOMAIN,
     STAT_CONSUMPTION,
     STAT_CONSUMPTION_COST,
@@ -48,11 +36,8 @@ from custom_components.watercare.statistics import bill_cost, day_start
 from custom_components.watercare.tariffs import PUBLISHED_TARIFFS, TariffSchedule
 
 from .common import (
-    ACCOUNT_NUMBER,
     ACCOUNT_PAYLOAD,
     EMAIL,
-    PASSWORD,
-    add_legacy_statistics,
     api_period,
     api_transaction,
     default_periods,
@@ -102,14 +87,6 @@ async def test_setup_without_credentials_fails(ha: HomeAssistant) -> None:
     assert entry.state is ConfigEntryState.SETUP_ERROR
 
 
-async def test_setup_backfills_a_missing_unique_id(
-    ha: HomeAssistant, mock_api: dict[str, AsyncMock]
-) -> None:
-    entry = make_entry(unique_id=None)
-    await _setup(ha, entry)
-    assert entry.unique_id == ACCOUNT_NUMBER
-
-
 async def test_refresh_token_is_persisted(
     ha: HomeAssistant, mock_api: dict[str, AsyncMock]
 ) -> None:
@@ -122,44 +99,6 @@ async def test_refresh_token_is_persisted(
 
     assert entry.data["refresh_token"] == "rotated-token"
     assert entry.state is ConfigEntryState.LOADED
-
-
-async def test_entity_registry_migrations(
-    ha: HomeAssistant, mock_api: dict[str, AsyncMock]
-) -> None:
-    entry = make_entry()
-    entry.add_to_hass(ha)
-    registry = er.async_get(ha)
-    legacy = registry.async_get_or_create(
-        Platform.SENSOR, DOMAIN, DOMAIN, config_entry=entry, suggested_object_id="water"
-    )
-    disabled_by_us = registry.async_get_or_create(
-        Platform.SENSOR,
-        DOMAIN,
-        f"{entry.entry_id}_account_balance",
-        config_entry=entry,
-        disabled_by=er.RegistryEntryDisabler.INTEGRATION,
-    )
-    disabled_by_user = registry.async_get_or_create(
-        Platform.SENSOR,
-        DOMAIN,
-        f"{entry.entry_id}_amount_due",
-        config_entry=entry,
-        disabled_by=er.RegistryEntryDisabler.USER,
-    )
-
-    await ha.config_entries.async_setup(entry.entry_id)
-    await ha.async_block_till_done(wait_background_tasks=True)
-
-    migrated = registry.async_get(legacy.entity_id)
-    assert migrated is not None
-    assert migrated.unique_id == f"{entry.entry_id}_usage"
-    balance = registry.async_get(disabled_by_us.entity_id)
-    assert balance is not None
-    assert balance.disabled_by is None
-    due = registry.async_get(disabled_by_user.entity_id)
-    assert due is not None
-    assert due.disabled_by is er.RegistryEntryDisabler.USER
 
 
 @pytest.mark.parametrize(
@@ -195,7 +134,17 @@ async def test_unusable_billing_data_retries(
     assert entry.state is ConfigEntryState.SETUP_RETRY
 
 
-async def test_skipped_and_duplicate_periods_are_tolerated(
+def _warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
+    """Return the integration's own warnings and errors."""
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if record.name.startswith("custom_components.watercare")
+        and record.levelno >= WARNING
+    ]
+
+
+async def test_unfinished_and_duplicate_periods_are_left_out_quietly(
     ha: HomeAssistant,
     mock_api: dict[str, AsyncMock],
     freezer: FrozenDateTimeFactory,
@@ -206,28 +155,54 @@ async def test_skipped_and_duplicate_periods_are_tolerated(
     ends_today = api_period(date(2026, 9, 3), date(2026, 10, 8), 9000)
     far_future = api_period(date(2026, 9, 3), date(2026, 10, 3), 9000)
     far_future["billingPeriodToDate"] = "9999-12-31T00:00:00Z"
+    # No Auckland date at all: a placeholder, not an unreadable period.
+    placeholder = api_period(date(2026, 9, 3), date(2026, 10, 3), 9000)
+    placeholder["billingPeriodToDate"] = "9999-12-31T23:59:59Z"
     mock_api["periods"].return_value = [
         *periods,
         periods[0],
-        {"junk": True},
         ends_today,
         far_future,
+        placeholder,
     ]
     entry = make_entry()
     await _setup(ha, entry)
 
     data = entry.runtime_data.data
-    assert data.skipped_periods == 3
+    assert (data.unfinished_periods, data.unreadable_periods) == (3, 0)
     assert data.duplicate_periods == 1
     assert data.latest_period.end == date(2026, 9, 2)
-    # A period skipped on every poll must not fill the log.
-    assert not [
-        record
-        for record in caplog.records
-        if record.name.startswith("custom_components.watercare")
-        and record.levelno >= WARNING
-    ]
-    assert "Ignored 3 unusable and 1 duplicate billing periods" in caplog.text
+    # A period left out on every poll must not fill the log.
+    assert _warnings(caplog) == []
+    assert (
+        "Left out 3 billing periods that end today or later and 1 duplicates"
+        in caplog.text
+    )
+
+
+async def test_unreadable_periods_are_reported_once(
+    ha: HomeAssistant,
+    mock_api: dict[str, AsyncMock],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    mock_api["periods"].return_value = [*default_periods(), {"junk": True}]
+    entry = make_entry()
+    await _setup(ha, entry)
+    coordinator = entry.runtime_data
+
+    assert coordinator.data.unreadable_periods == 1
+    warning = (
+        "Could not read {} of the billing periods Watercare sent; their days "
+        "have no water use in the statistics"
+    )
+    assert _warnings(caplog) == [warning.format(1)]
+
+    # Not again for the same period on every poll, but again for another.
+    await _refresh(ha, coordinator)
+    assert _warnings(caplog) == [warning.format(1)]
+    mock_api["periods"].return_value = [*default_periods(), {}, {"junk": True}]
+    await _refresh(ha, coordinator)
+    assert _warnings(caplog) == [warning.format(1), warning.format(2)]
 
 
 async def test_a_bill_dated_today_gets_its_period_the_next_day(
@@ -261,61 +236,58 @@ async def test_a_bill_dated_today_gets_its_period_the_next_day(
     assert entry.runtime_data.data.latest_period.end == date(2026, 10, 8)
 
 
-async def _add_legacy_consumption(hass: HomeAssistant, *days: date) -> None:
-    async_add_external_statistics(
-        hass,
-        {
-            "has_sum": True,
-            "mean_type": StatisticMeanType.NONE,
-            "name": "Watercare Water Consumption",
-            "source": DOMAIN,
-            "statistic_id": STAT_CONSUMPTION,
-            "unit_class": "volume",
-            "unit_of_measurement": "L",
-        },
-        [
-            {"start": day_start(day), "sum": 1000.0 * (index + 1)}
-            for index, day in enumerate(days)
-        ],
-    )
-    await async_wait_recording_done(hass)
+async def test_adding_watercare_again_continues_its_statistics(
+    ha: HomeAssistant,
+    mock_api: dict[str, AsyncMock],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Removing Watercare keeps its statistics; adding it again continues them."""
+    entry = make_entry()
+    await _setup(ha, entry)
+    assert entry.runtime_data.last_import.consumption_rows == 92
+    await ha.config_entries.async_remove(entry.entry_id)
+    await ha.async_block_till_done()
+    assert len(await stored_rows(ha, STAT_CONSUMPTION)) == 92
+
+    caplog.clear()
+    mock_api["periods"].return_value = [
+        api_period(date(2026, 9, 3), date(2026, 10, 2), 9000),
+        *default_periods(),
+    ]
+    again = make_entry()
+    await _setup(ha, again)
+
+    # Only the new bill's days, after the kept ones, and nothing to report.
+    assert again.runtime_data.last_import.consumption_rows == 30
+    rows = await stored_rows(ha, STAT_CONSUMPTION)
+    assert len(rows) == 92 + 30
+    assert rows[-1]["sum"] == pytest.approx(42000)
+    assert _warnings(caplog) == []
+    assert not [
+        issue
+        for (domain, _issue_id), issue in ir.async_get(ha).issues.items()
+        if domain == DOMAIN
+    ]
 
 
-async def test_first_run_rebuilds_legacy_statistics(
+async def test_setup_deletes_the_retired_rebuild_notice(
     ha: HomeAssistant, mock_api: dict[str, AsyncMock]
 ) -> None:
-    await _add_legacy_consumption(ha, date(2026, 7, 3), date(2026, 8, 3))
-    entry = make_entry(statistics_version=None)
-    await _setup(ha, entry)
-
-    coordinator = entry.runtime_data
-    assert coordinator.statistics_status == "rebuilt"
-    assert coordinator.last_import.rebuilt
-    assert coordinator.last_import.consumption_rows == 92
-    assert entry.data["statistics_version"] == 2
-
-    # Later polls only add new days.
-    await _refresh(ha, coordinator)
-    assert coordinator.last_import.consumption_rows == 0
-    assert not coordinator.last_import.rebuilt
-
-
-async def test_rebuild_is_skipped_when_it_would_lose_history(
-    ha: HomeAssistant, mock_api: dict[str, AsyncMock]
-) -> None:
-    await _add_legacy_consumption(ha, date(2019, 12, 13), date(2026, 8, 3))
-    entry = make_entry(statistics_version=None)
-    await _setup(ha, entry)
-
-    coordinator = entry.runtime_data
-    assert coordinator.statistics_status == "rebuild_skipped"
-    assert entry.data["statistics_version"] == 2
-    issue = ir.async_get(ha).async_get_issue(
-        DOMAIN, f"statistics_rebuild_skipped_{entry.entry_id}"
+    """1.5.x and 1.6.0b1 could leave a notice that nothing raises any more."""
+    entry = make_entry()
+    issue_id = f"statistics_rebuild_skipped_{entry.entry_id}"
+    ir.async_create_issue(
+        ha,
+        DOMAIN,
+        issue_id,
+        is_fixable=False,
+        is_persistent=True,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key="statistics_rebuild_skipped",
     )
-    assert issue is not None
-    # Only the bill after the stored history was added.
-    assert coordinator.last_import.consumption_rows == 30
+    await _setup(ha, entry)
+
+    assert ir.async_get(ha).async_get_issue(DOMAIN, issue_id) is None
 
 
 async def test_tariff_issue_is_raised_and_cleared(
@@ -359,61 +331,36 @@ async def test_tariff_issue_is_raised_and_cleared(
     assert entry.runtime_data.data.latest_cost is not None
 
 
-async def test_migrate_drops_rates_that_match_a_published_year(
-    ha: HomeAssistant, mock_api: dict[str, AsyncMock]
-) -> None:
-    entry = make_entry(
-        minor_version=1,
-        data={"email": EMAIL, CONF_PASSWORD: PASSWORD, "consumption_rate": 1.0},
-        options={
-            "endpoint": "mechanicalmonthly",
-            "consumption_rate": 2.296,
-            "wastewater_rate": 3.994,
-            "wastewater_ratio": 0.785,
-            "annual_line_charge": 332,
-        },
-    )
-    await _setup(ha, entry)
-
-    assert entry.state is ConfigEntryState.LOADED
-    assert entry.minor_version == 2
-    assert entry.data[CONF_USERNAME] == EMAIL
-    assert "email" not in entry.data
-    assert "consumption_rate" not in entry.data
-    assert entry.options == {"wastewater_ratio": 0.785}
-
-
-async def test_migrate_keeps_unpublished_rates_for_the_current_year(
+async def test_an_entry_from_1_4_x_is_refused(
     ha: HomeAssistant,
     mock_api: dict[str, AsyncMock],
-    freezer: FrozenDateTimeFactory,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    freezer.move_to("2026-10-08T12:00:00+13:00")
-    entry = make_entry(
-        minor_version=1,
-        options={
-            "consumption_rate": 2.5,
-            "wastewater_rate": 4.0,
-            "wastewater_ratio": 0.95,
-            "annual_line_charge": 350,
-        },
+    """Entries from 1.4.x and earlier are no longer migrated."""
+    data = {"email": EMAIL, "password": "synthetic-password"}
+    options = {"consumption_rate": 2.296, "wastewater_ratio": 0.785}
+    entry = make_entry(minor_version=1, data=data, options=options)
+    await _setup(ha, entry)
+
+    assert entry.state is ConfigEntryState.MIGRATION_ERROR
+    assert (entry.minor_version, dict(entry.data), dict(entry.options)) == (
+        1,
+        data,
+        options,
     )
-    await _setup(ha, entry)
-
-    assert entry.options == {
-        "wastewater_ratio": 0.95,
-        "tariff_overrides": {
-            "2026": {"water_rate": 2.5, "wastewater_rate": 4.0, "fixed_charge": 350.0}
-        },
-    }
-
-
-async def test_migrate_without_rates_uses_defaults(
-    ha: HomeAssistant, mock_api: dict[str, AsyncMock]
-) -> None:
-    entry = make_entry(minor_version=1, options={"wastewater_ratio": "bad"})
-    await _setup(ha, entry)
-    assert entry.options == {"wastewater_ratio": 0.785}
+    assert [
+        record.getMessage()
+        for record in caplog.records
+        if record.name.startswith("custom_components.watercare")
+        and record.levelno >= ERROR
+    ] == [
+        (
+            "This Watercare entry was created by version 1.4 or earlier, which "
+            "this version no longer upgrades. Install Watercare 1.5.1 first, or "
+            "remove Watercare, delete its four statistics and add it again"
+        )
+    ]
+    mock_api["account"].assert_not_called()
 
 
 async def test_migrate_refuses_a_newer_version(ha: HomeAssistant) -> None:
@@ -422,14 +369,10 @@ async def test_migrate_refuses_a_newer_version(ha: HomeAssistant) -> None:
     assert entry.state is ConfigEntryState.MIGRATION_ERROR
 
 
-async def test_migrate_entry_guards(ha: HomeAssistant) -> None:
-    newer = make_entry(version=2, minor_version=1)
-    current = make_entry(minor_version=2, options={"wastewater_ratio": 0.95})
-    newer.add_to_hass(ha)
-
-    assert not await async_migrate_entry(ha, newer)
-    assert await async_migrate_entry(ha, current)
-    assert current.options == {"wastewater_ratio": 0.95}
+async def test_migrate_entry_loads_a_newer_minor_version(ha: HomeAssistant) -> None:
+    newer = make_entry(minor_version=3)
+    assert await async_migrate_entry(ha, newer)
+    assert newer.minor_version == 3
 
 
 async def test_tariff_issue_names_the_earliest_unpriced_year(
@@ -502,16 +445,21 @@ async def test_smart_meter_issue_is_raised_and_cleared(
 
 
 @pytest.mark.parametrize(
-    "periods",
+    ("periods", "reason"),
     [
-        pytest.param({"return_value": []}, id="no-bills"),
+        pytest.param({"return_value": []}, "smart meter", id="no-bills"),
         pytest.param(
-            {"side_effect": WatercareConnectionError("HTTP 404")}, id="bills-refused"
+            {"side_effect": WatercareConnectionError("it answered with HTTP 404")},
+            "HTTP 404",
+            id="bills-refused",
         ),
     ],
 )
 async def test_smart_meter_issue_without_bills(
-    ha: HomeAssistant, mock_api: dict[str, AsyncMock], periods: dict[str, Any]
+    ha: HomeAssistant,
+    mock_api: dict[str, AsyncMock],
+    periods: dict[str, Any],
+    reason: str,
 ) -> None:
     _use_account(mock_api, meterType="smartmeter-single")
     for name, value in periods.items():
@@ -520,8 +468,113 @@ async def test_smart_meter_issue_without_bills(
     await _setup(ha, entry)
 
     assert entry.state is ConfigEntryState.SETUP_RETRY
+    assert reason in str(entry.reason)
     issue_id = f"smart_meter_{entry.entry_id}"
     assert ir.async_get(ha).async_get_issue(DOMAIN, issue_id) is not None
+
+
+async def test_a_new_account_without_bills_retries(
+    ha: HomeAssistant, mock_api: dict[str, AsyncMock]
+) -> None:
+    mock_api["periods"].return_value = []
+    entry = make_entry()
+    await _setup(ha, entry)
+
+    assert entry.state is ConfigEntryState.SETUP_RETRY
+    assert "no completed bill for this account yet" in str(entry.reason)
+
+
+@pytest.mark.parametrize(
+    ("changes", "smart"),
+    [
+        pytest.param({"meterType": ""}, False, id="blank"),
+        pytest.param({"meterType": "  "}, False, id="spaces"),
+        pytest.param({"meterType": " mechanical "}, False, id="padded"),
+        pytest.param({"meterType": "smartmeter-single"}, True, id="smart"),
+    ],
+)
+async def test_a_blank_or_padded_meter_type_is_not_a_smart_meter(
+    ha: HomeAssistant,
+    mock_api: dict[str, AsyncMock],
+    changes: dict[str, Any],
+    smart: bool,
+) -> None:
+    _use_account(mock_api, **changes)
+    entry = make_entry()
+    await _setup(ha, entry)
+
+    issue_id = f"smart_meter_{entry.entry_id}"
+    assert (ir.async_get(ha).async_get_issue(DOMAIN, issue_id) is not None) is smart
+
+
+async def test_a_smart_meter_account_refuses_unusual_periods(
+    ha: HomeAssistant,
+    mock_api: dict[str, AsyncMock],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Periods that would be moved or read as no water are refused instead."""
+    _use_account(mock_api, meterType="smartmeter-single")
+    no_usage = api_period(date(2026, 9, 3), date(2026, 10, 2), 9000)
+    del no_usage["waterUsage"]
+    # Starts inside the newest bill, so it overlaps it.
+    overlapping = api_period(date(2026, 8, 20), date(2026, 9, 10), 4000)
+    mock_api["periods"].return_value = [no_usage, overlapping, *default_periods()]
+    entry = make_entry()
+    await _setup(ha, entry)
+    coordinator = entry.runtime_data
+
+    assert coordinator.data.refused_periods == 2
+    assert coordinator.data.latest_period.end == date(2026, 9, 2)
+    assert coordinator.last_import.consumption_rows == 92
+    warnings = [
+        (
+            "Skipped the Watercare billing period from 2026-09-03 to 2026-10-02, "
+            "which has no water use figure, because Watercare reports a smart meter"
+        ),
+        (
+            "Skipped the Watercare billing period from 2026-08-20 to 2026-09-10, "
+            "which overlaps the period before it, because Watercare reports a "
+            "smart meter"
+        ),
+    ]
+    assert _warnings(caplog) == warnings
+
+    # Each is reported once, not on every poll.
+    await _refresh(ha, coordinator)
+    assert _warnings(caplog) == warnings
+
+    # A period that grew past the days already recorded.
+    mock_api["periods"].return_value = [
+        api_period(date(2026, 8, 4), date(2026, 9, 20), 20000),
+        *default_periods()[1:],
+    ]
+    await _refresh(ha, coordinator)
+    assert coordinator.last_import.consumption_rows == 0
+    assert [(item.reason) for item in coordinator.last_import.refused] == [
+        "overlaps_stored"
+    ]
+    assert _warnings(caplog)[-1] == (
+        "Skipped the Watercare billing period from 2026-08-04 to 2026-09-20, "
+        "which overlaps days already recorded, because Watercare reports a smart "
+        "meter"
+    )
+    rows = await stored_rows(ha, STAT_CONSUMPTION)
+    assert rows[-1]["sum"] == pytest.approx(33000)
+
+
+async def test_a_manually_read_meter_reads_a_period_without_usage_as_none(
+    ha: HomeAssistant, mock_api: dict[str, AsyncMock]
+) -> None:
+    """Unchanged from 1.4.1: a null usage on a manually read meter is 0 L."""
+    no_usage = api_period(date(2026, 9, 3), date(2026, 10, 2), 9000)
+    no_usage["waterUsage"] = None
+    mock_api["periods"].return_value = [no_usage, *default_periods()]
+    entry = make_entry()
+    await _setup(ha, entry)
+
+    data = entry.runtime_data.data
+    assert data.refused_periods == 0
+    assert data.latest_period.usage_litres == 0
 
 
 async def test_no_smart_meter_issue_for_a_mechanical_meter(
@@ -624,9 +677,10 @@ async def test_the_last_bill_amount_survives_a_failed_read(
         amount = ha.states.get("sensor.watercare_last_bill_amount")
         assert amount.state == "98.76"
         assert amount.attributes["billing_period_end"] == "2026-09-02"
-    assert "Unexpected error reading the Watercare bills' amounts: RuntimeError" in (
-        caplog.text
-    )
+    assert (
+        "Could not read the newest Watercare bill's amount (unexpected "
+        "RuntimeError); Last bill amount keeps the amount read earlier, if any"
+    ) in caplog.text
     assert "synthetic-secret-detail" not in caplog.text
 
     # A placeholder date, which has no Auckland date, skips only its own item.
@@ -656,6 +710,27 @@ async def test_the_last_bill_amount_survives_a_failed_read(
     assert ha.states.get("sensor.watercare_last_bill_amount").state == "unknown"
 
 
+async def test_an_unexpected_bill_amount_error_is_logged_once_per_streak(
+    ha: HomeAssistant,
+    mock_api: dict[str, AsyncMock],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    entry = make_entry()
+    await _setup(ha, entry)
+    coordinator = entry.runtime_data
+
+    mock_api["transactions"].side_effect = RuntimeError("synthetic")
+    await _refresh(ha, coordinator)
+    await _refresh(ha, coordinator)
+    assert len(_warnings(caplog)) == 1
+
+    mock_api["transactions"].side_effect = None
+    await _refresh(ha, coordinator)
+    mock_api["transactions"].side_effect = RuntimeError("synthetic")
+    await _refresh(ha, coordinator)
+    assert len(_warnings(caplog)) == 2
+
+
 async def test_removing_the_entry_removes_its_issues(
     ha: HomeAssistant,
     mock_api: dict[str, AsyncMock],
@@ -668,9 +743,23 @@ async def test_removing_the_entry_removes_its_issues(
     mock_api["periods"].side_effect = WatercareUpgradeRequiredError("upgrade")
     await _refresh(ha, entry.runtime_data)
     issues = ir.async_get(ha)
+    # One that only 1.5.x and 1.6.0b1 raised.
+    ir.async_create_issue(
+        ha,
+        DOMAIN,
+        f"statistics_rebuild_skipped_{entry.entry_id}",
+        is_fixable=False,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key="statistics_rebuild_skipped",
+    )
     issue_ids = [
         f"{issue}_{entry.entry_id}"
-        for issue in ("tariff_missing", "smart_meter", "upgrade_required")
+        for issue in (
+            "tariff_missing",
+            "smart_meter",
+            "upgrade_required",
+            "statistics_rebuild_skipped",
+        )
     ]
     assert all(issues.async_get_issue(DOMAIN, issue_id) for issue_id in issue_ids)
 
@@ -704,43 +793,15 @@ async def test_bill_spanning_1_july_keeps_its_cost_while_the_new_year_is_unknown
     assert usage.attributes["tariff_year"] == "2026/27"
 
 
-def _legacy_entry() -> Any:
-    """A config entry exactly as 1.4.x left it (version 1.1, flat prices)."""
-    return make_entry(
-        minor_version=1,
-        statistics_version=None,
-        unique_id=None,
-        data={"email": EMAIL, CONF_PASSWORD: PASSWORD},
-        options={
-            "endpoint": "mechanicalmonthly",
-            "consumption_rate": 2.296,
-            "wastewater_rate": 3.994,
-            "wastewater_ratio": 0.785,
-            "annual_line_charge": 332,
-        },
-    )
-
-
-async def test_upgrade_from_1_4_x_end_to_end(
+async def test_first_import_end_to_end(
     ha: HomeAssistant, mock_api: dict[str, AsyncMock]
 ) -> None:
-    await add_legacy_statistics(ha)
-    assert len(await stored_rows(ha, STAT_TOTAL_COST)) == 3
-    entry = _legacy_entry()
-
+    entry = make_entry()
     await _setup(ha, entry)
 
-    # Config entry migration.
-    assert entry.state is ConfigEntryState.LOADED
-    assert entry.minor_version == 2
-    assert entry.unique_id == ACCOUNT_NUMBER
-    assert entry.options == {"wastewater_ratio": 0.785}
-    assert entry.data[CONF_USERNAME] == EMAIL
-    assert entry.data["statistics_version"] == 2
     coordinator = entry.runtime_data
-    assert coordinator.statistics_status == "rebuilt"
-
-    # The legacy rows are gone and every statistic holds one row per day.
+    assert coordinator.statistics_status == "imported"
+    # Every statistic holds one row per day.
     periods = parse_billing_periods(default_periods()).periods
     costs = [bill_cost(p, TariffSchedule({}), Decimal("0.785")) for p in periods]
     assert all(cost is not None for cost in costs)
@@ -757,130 +818,44 @@ async def test_upgrade_from_1_4_x_end_to_end(
             date(2026, 6, 3)
         )
         assert rows[-1]["sum"] == pytest.approx(final_sum), statistic_id
-    # The June bill spans 1 July and keeps its 2025/26 price; the later bills
-    # now cost more than the flat 1.4.x price gave them.
+    # The June bill spans 1 July and keeps its 2025/26 price.
     assert costs[0] is not None
     assert round(costs[0].total, 2) == Decimal("93.37")
     assert expected[STAT_TOTAL_COST] == pytest.approx(93.37 + 76.79 + 104.89)
 
-    # The next poll adds nothing and keeps the rebuilt rows.
+    # The next poll adds nothing and keeps the rows.
     await _refresh(ha, coordinator)
     assert coordinator.last_import.consumption_rows == 0
     assert len(await stored_rows(ha, STAT_TOTAL_COST)) == 92
 
 
-async def test_rebuild_retries_after_a_failed_read(
-    ha: HomeAssistant, mock_api: dict[str, AsyncMock]
-) -> None:
-    await add_legacy_statistics(ha)
-    entry = make_entry(statistics_version=None)
-
-    # The database cannot be read when the rebuild checks the stored history.
-    with patch(
-        "custom_components.watercare.statistics.statistics_during_period",
-        side_effect=OperationalError("SELECT", {}, Exception("database is locked")),
-    ):
-        await _setup(ha, entry)
-
-    # The sensors work; the statistics wait for the next poll.
-    assert entry.state is ConfigEntryState.LOADED
-    coordinator = entry.runtime_data
-    assert coordinator.statistics_status == "rebuild_pending"
-    assert "statistics_version" not in entry.data
-    # Nothing was cleared: the legacy rows are still there.
-    assert len(await stored_rows(ha, STAT_CONSUMPTION)) == 3
-
-    await _refresh(ha, coordinator)
-
-    assert coordinator.statistics_status == "rebuilt"
-    assert entry.data["statistics_version"] == 2
-    assert len(await stored_rows(ha, STAT_CONSUMPTION)) == 92
-
-
-async def test_rebuild_retries_after_the_recorder_fails_the_clear(
+async def test_statistics_retry_after_a_failed_read(
     ha: HomeAssistant,
     mock_api: dict[str, AsyncMock],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A clear the recorder fails leaves the marker unset.
+    entry = make_entry()
 
-    The recorder runs the clear only once. On a database error it logs the
-    error and moves on, and the imports queued behind the clear still run, on
-    top of the 1.4.x rows. The rebuild is recorded as done only if the clear
-    succeeded, so the next update rebuilds.
-    """
-    await add_legacy_statistics(ha)
-    entry = make_entry(statistics_version=None)
-    clears: list[list[str]] = []
-    clear_statistics = recorder_statistics.clear_statistics
-
-    def _locked_once(instance: Recorder, statistic_ids: list[str]) -> None:
-        clears.append(statistic_ids)
-        if len(clears) == 1:
-            raise OperationalError("DELETE", {}, Exception("database is locked"))
-        clear_statistics(instance, statistic_ids)
-
-    with patch.object(recorder_statistics, "clear_statistics", _locked_once):
-        await _setup(ha, entry)
-
-        assert len(clears) == 1
-        assert entry.state is ConfigEntryState.LOADED
-        coordinator = entry.runtime_data
-        assert "statistics_version" not in entry.data
-        assert coordinator.statistics_status == "rebuild_pending"
-        assert not coordinator.last_import.rebuilt
-        assert "The recorder did not clear the Watercare statistics" in caplog.text
-
-        await _refresh(ha, coordinator)
-
-    # The check before the rebuild let it run again, and this clear succeeded.
-    assert len(clears) == 2
-    assert coordinator.statistics_status == "rebuilt"
-    assert coordinator.last_import.rebuilt
-    assert entry.data["statistics_version"] == 2
-    for statistic_id in ALL_STATISTIC_IDS:
-        rows = await stored_rows(ha, statistic_id)
-        assert len(rows) == 92, statistic_id
-        assert datetime.fromtimestamp(rows[0]["start"], tz=UTC) == day_start(
-            date(2026, 6, 3)
-        )
-    consumption = await stored_rows(ha, STAT_CONSUMPTION)
-    assert consumption[-1]["sum"] == pytest.approx(33000)
-
-
-async def test_rebuild_retries_after_the_import_fails(
-    ha: HomeAssistant, mock_api: dict[str, AsyncMock]
-) -> None:
-    await add_legacy_statistics(ha)
-    entry = make_entry(statistics_version=None)
-    calls: list[str] = []
-
-    def _fail_on_the_cost_rows(hass: HomeAssistant, metadata: Any, rows: Any) -> None:
-        calls.append(metadata["statistic_id"])
-        if len(calls) > 1:
-            raise HomeAssistantError("import failed")
-        async_add_external_statistics(hass, metadata, rows)
-
-    # The clear completes, the consumption rows are queued, then the import
-    # of the first cost statistic fails.
+    # The database cannot be read when the import checks the stored history.
     with patch(
-        "custom_components.watercare.statistics.async_add_external_statistics",
-        side_effect=_fail_on_the_cost_rows,
+        "custom_components.watercare.statistics.get_last_statistics",
+        side_effect=OperationalError("SELECT", {}, Exception("database is locked")),
     ):
         await _setup(ha, entry)
 
-    assert calls == [STAT_CONSUMPTION, STAT_TOTAL_COST]
+    # The sensors work; the statistics wait for the next update.
     assert entry.state is ConfigEntryState.LOADED
     coordinator = entry.runtime_data
-    assert coordinator.statistics_status == "rebuild_pending"
-    assert "statistics_version" not in entry.data
-    assert len(await stored_rows(ha, STAT_CONSUMPTION)) == 92
-    assert await stored_rows(ha, STAT_TOTAL_COST) == []
+    assert coordinator.statistics_status == "pending"
+    assert len(await stored_rows(ha, STAT_CONSUMPTION)) == 0
+    assert _warnings(caplog) == [
+        (
+            "Could not update the Watercare statistics; the next update, within "
+            "12 hours, tries again"
+        )
+    ]
 
     await _refresh(ha, coordinator)
 
-    # The partial import loses nothing, so the next attempt rebuilds in full.
-    assert coordinator.statistics_status == "rebuilt"
-    assert entry.data["statistics_version"] == 2
-    for statistic_id in ALL_STATISTIC_IDS:
-        assert len(await stored_rows(ha, statistic_id)) == 92, statistic_id
+    assert coordinator.statistics_status == "imported"
+    assert len(await stored_rows(ha, STAT_CONSUMPTION)) == 92

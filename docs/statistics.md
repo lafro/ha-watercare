@@ -45,6 +45,7 @@ Consequences:
 - Stored history is never rewritten by a poll. Changing a price for a year that is already stored does not reprice it.
 - If Watercare ever returns fewer bills than before, nothing is lost and the sum never steps down.
 - A new bill that would reach back into stored days is spread over the days after them instead, so its whole volume is still recorded.
+- While Watercare reports a smart meter, whose bills have never been seen, such a bill is skipped with a warning instead of moved, and so is one that starts before the previous bill ends (starting on its end day is allowed) or has no water use figure. Moving a bill with its whole volume suits a mechanical meter's re-dated bill, but could count a smart meter's days twice.
 - Watercare corrects an estimated reading through the next bill, not by revising the old one, so nothing needs rewriting.
 
 ## Costs at the tariff in force
@@ -53,58 +54,47 @@ Watercare charges each bill at the prices in force when its billing period start
 
 If no tariff is known for the year a bill starts in (a new financial year the release does not yet carry and the user has not entered), the cost statistics stop before that bill's first day, and resume from that day once a tariff exists. The consumption statistic is unaffected. A repair notice asks for the prices of the earliest year that blocks the costs, or of the current year if it has none yet. Days already recorded are never repriced, so the options and the repair form never pre-fill prices for a year the integration does not know.
 
-## The one-off rebuild (upgrade from 1.4.x)
+## The first import
 
-Statistics written by 1.4.x have one row per bill and are priced at one flat tariff, so they cannot be continued. Each config entry records `statistics_version: 2` once its statistics are in the new format. On the first statistics update of an entry without that marker (after Home Assistant has started; see below), the integration:
+A new config entry's first statistics update (after Home Assistant has started; see below) is a normal poll. A statistic with no stored rows is imported in full, from the first bill Watercare returns, at the entry's options; one with stored rows continues after its newest row. So removing Watercare and adding it again continues its statistics: the new entry adds only the days after the newest stored one. New entries record `statistics_version: 2` in their data, which 1.5.x reads as "already in the new format", so going back to 1.5.1 continues the statistics too, rather than rebuilding them.
 
-1. checks that a rebuild would not lose history: the stored consumption must not start before the oldest bill Watercare now returns, and its running total must not exceed what a rebuild reaches by the same day (which would mean a bill Watercare no longer returns; see below);
-2. works out the daily rows for the full history, from zero;
-3. queues a clear of the four statistics (`Recorder.async_clear_statistics`) and then the import of those rows (`async_add_external_statistics`, the recorder API for external statistics; `async_import_statistics` is the equivalent for entity statistics) on the recorder's queue;
-4. waits until the recorder has taken them off its queue;
-5. records the marker, if the clear succeeded.
+Entries created by 1.4.x or earlier (config entry minor version 1) are no longer upgraded: setup refuses them with a migration error and logs how to go on (install 1.5.1 first, or remove Watercare, delete its four statistics and add it again). 1.5.x rebuilt such an entry's statistics once, from every bill; 1.6.0 removed that rebuild.
 
-Step 3 happens in one go in the event loop, without awaiting anything, so the import is queued straight behind the clear, and no cancellation can come between them. Nothing runs SQL directly. Step 4 is there because queued is not written. At shutdown the recorder normally works through its queue at the final-write stage. If that stage times out, `Recorder._async_close` drops what is left, and that can even separate the clear from the import, leaving the four statistics empty across the restart. The marker is still unset in either case, so the next start rebuilds. Recording the marker before step 4 could instead leave the 1.4.x rows in place, or no rows at all, under a marker that says they were rebuilt. If a read fails or the import is refused, the update logs `Could not update the Watercare statistics`. The recorder runs the clear only once and only logs a database error it meets (a locked SQLite database, a MariaDB lock-wait timeout), and the import still runs, on top of the 1.4.x rows. The integration therefore records the marker only if the clear succeeded; when it failed, the update logs `The recorder did not clear the Watercare statistics` and the next poll rebuilds. (The earlier line `Watercare statistics rebuilt: … queued` is logged when the rows are queued, before the clear's outcome is known.) If the update is cancelled during step 4 (an unload or a shutdown), the queued clear and import are left to the recorder. In every case the marker stays unset and the next update checks and rebuilds again. A partly imported history never holds more than the bills Watercare returns, so that check lets the rebuild run. `tests/test_init.py` covers these failures and the full upgrade from a 1.4.x entry. The log shows a warning before and after the rebuild. It only touches the four `watercare:*` statistics and only runs after Watercare has returned at least one valid bill.
+### Starting again
 
-A new config entry also has no marker, so its first statistics update runs the same check and, if it passes, clears and re-imports these statistics too. For the same account that is harmless: the result is the same rows, provided the new entry's options match the old entry's (a new entry starts with the default wastewater ratio and no prices of its own, and the costs are worked out with them). It is not harmless for a different account: every stored row belongs to the old account's meter, so either the check skips the rebuild or the rebuild deletes the old account's history. See [Switching accounts](../README.md#switching-accounts).
+To import the whole history afresh, at the current options (after changing the wastewater ratio, say):
+
+1. delete the four statistics under **Settings → Tools → Statistics**;
+2. reload Watercare.
+
+Its next statistics update finds them empty and imports every bill Watercare returns. To switch accounts, remove Watercare instead of reloading it, delete the statistics, and add it again with the other account ([Switching accounts](../README.md#switching-accounts)).
 
 ### Start-up and the recorder
 
 Home Assistant's recorder writes statistics from a queue on its own thread, and it does not start working through that queue until Home Assistant has started. Home Assistant in turn does not finish starting while a config entry set up during start-up is still setting up. So an integration must never wait for the recorder during setup.
 
-1.5.0 broke this rule: it rebuilt inside the first poll of setup and waited (up to 5 minutes) for the recorder to confirm the clear. On a restart with the rebuild pending, setup and start-up waited for each other until Home Assistant's 5-minute start-up timeout cancelled the setup, after the clear was queued and before the import was. Start-up was held all that time, and the statistics were left empty. A reload rebuilt them, because the marker had not been recorded. A normal poll was affected less: it never waited for the queue, but it read the stored statistics during setup, so a slow database could hold start-up for as long as the read took.
+1.5.0 broke this rule: it rebuilt the statistics inside the first poll of setup and waited (up to 5 minutes) for the recorder to confirm, so on a restart with the rebuild pending, setup and start-up waited for each other until Home Assistant's 5-minute start-up timeout cancelled the setup. A normal poll was affected less: it never waited for the queue, but it read the stored statistics during setup, so a slow database could hold start-up for as long as the read took. The rebuild is gone, but a first import still writes every bill Watercare returns, so the rules below stay.
 
 From 1.5.1:
 
-- A poll only fetches the bills and the account. The statistics update, the one-off rebuild included, runs afterwards as a background task of the config entry, and only once Home Assistant has started (`async_at_started`). Setup never waits for it, and unloading the entry or stopping Home Assistant cancels it. A poll still fetching bills when the entry unloads starts no update when it finishes, and an entry unloaded (or reloaded) before Home Assistant has started stops waiting for the start, so the unloaded entry's statistics never start.
+- A poll only fetches the bills and the account. The statistics update runs afterwards as a background task of the config entry, and only once Home Assistant has started (`async_at_started`). Setup never waits for it, and unloading the entry or stopping Home Assistant cancels it. A poll still fetching bills when the entry unloads starts no update when it finishes, and an entry unloaded (or reloaded) before Home Assistant has started stops waiting for the start, so the unloaded entry's statistics never start.
 - One update runs at a time. A poll that finishes while an update is still running leaves its bills for that update to take next.
 - Before every read of the stored statistics, an update waits for the recorder's queue (below).
-- The rebuild queues the clear and the import back to back (above), so a cancellation can only arrive before the clear or after both are queued. One that arrives before the marker leaves the queued rebuild to the recorder, and the next update rebuilds again, to the same rows.
 
-`tests/test_startup.py` holds the recorder's thread, as start-up does, and checks that setup finishes at once and the statistics are rebuilt afterwards, including when the task is cancelled the moment the clear is queued (the first five tests there fail on 1.5.0). It also checks that no update runs before Home Assistant has started or after the entry unloads (an entry unloaded or reloaded during start-up included), that the marker waits for the recorder, that a rebuild a shutdown drops, whole or after its clear, runs again on the next start, and that an import the recorder retries or drops after the marker is completed later.
+`tests/test_startup.py` holds the recorder's thread, as start-up does, and checks that setup finishes at once and the first import runs afterwards. It also checks that no update runs before Home Assistant has started or after the entry unloads (an entry unloaded or reloaded during start-up included), that a first import a shutdown drops runs again on the next start, and that an import the recorder retries or drops is completed later.
 
 #### What the wait before a read guarantees
 
-Reads go straight to the database, past the recorder's queue. Without a wait, a poll that follows a rebuild while the recorder is busy could read the 1.4.x rows and continue their sums. So before every read an update awaits the recorder's `async_block_till_done`, as Home Assistant's history and logbook do before theirs. Exactly what that guarantees:
+Reads go straight to the database, past the recorder's queue, so before every read an update awaits the recorder's `async_block_till_done`, as Home Assistant's history and logbook do before theirs, and plans from rows already written rather than ones still queued. Exactly what that guarantees:
 
 - If anything is queued, it queues a task of its own behind it and returns once the recorder thread reaches that task, so every write that was waiting in the queue has run.
 - If the queue is empty, it returns at once, even while the recorder thread is still running the last task it took off the queue.
 
 So a read never misses a write that was still waiting in the queue, but it can miss one: the last one queued, while the recorder is still committing it. That is harmless because of one rule: **a statistic with no stored rows is always imported in full, from zero.**
 
-- After a rebuild, the write a read can miss is the import of a statistic the rebuild has just cleared. The read finds that statistic empty, so from the same bills the next import queues the same rows for it again, and the recorder, which keeps one row per statistic and hour, replaces the identical rows with them.
+- After a first import, the write a read can miss is that import. The read finds the statistic empty, so from the same bills the next import queues the same rows for it again, and the recorder, which keeps one row per statistic and hour, replaces the identical rows with them.
 - After a normal import, the write a read can miss continues its statistic from that statistic's newest stored row, which the read still sees, so the next import plans the same days again from the same row.
 
-`test_a_statistic_with_no_stored_rows_is_reimported_with_the_same_rows` in `tests/test_statistics_recorder.py` pins the rule. The same wait comes before the marker (step 4 above), where it means the recorder has taken the whole rebuild off its queue.
+`test_a_statistic_with_no_stored_rows_is_reimported_with_the_same_rows` in `tests/test_statistics_recorder.py` pins the rule.
 
-Taken off the queue is not always written, and the same rule covers that too. An import that meets a database error the recorder retries (a MySQL or MariaDB lock timeout or deadlock) queues itself again, behind the wait's own task; one that meets any other error is logged and dropped. Either way the marker can be recorded before that statistic's rows are written. A retried import writes them shortly afterwards. A dropped one leaves the statistic empty, so the next update imports it in full, with the rows the rebuild planned. `test_an_import_the_recorder_retries_or_drops_is_completed_later` in `tests/test_startup.py` covers both.
-
-### When the rebuild is skipped
-
-If the stored history holds bills Watercare no longer returns (it starts earlier than the oldest returned bill, or its running total is larger than the returned bills add up to by the same day), the rebuild would delete history that cannot be recreated. The integration then keeps the stored rows, adds new days after them in the new format, records the marker and raises a repair notice, **Watercare statistics were not rebuilt**.
-
-To rebuild by hand in that case, after exporting the statistics (see [migration.md](migration.md)):
-
-1. delete the four statistics under **Settings → Tools → Statistics**;
-2. delete the Watercare integration entry and add it again.
-
-The new entry's first statistics update imports everything Watercare returns.
+Taken off the queue is not always written, and the same rule covers that too. An import that meets a database error the recorder retries (a MySQL or MariaDB lock timeout or deadlock) queues itself again, behind the wait's own task; one that meets any other error is logged and dropped. A retried import writes its rows shortly afterwards. A dropped one leaves the statistic at its newest written row, or empty, so the next update plans the same days again. `test_an_import_the_recorder_retries_or_drops_is_completed_later` in `tests/test_startup.py` covers both.

@@ -16,7 +16,6 @@ from custom_components.watercare.tariffs import (
     TariffSchedule,
     financial_year,
     financial_year_label,
-    matching_published_year,
     schedule_from_options,
     tariff_from_user_input,
 )
@@ -111,10 +110,7 @@ def test_tariff_conversions() -> None:
     }
 
 
-def test_matching_published_year() -> None:
-    assert matching_published_year(2.296, 3.994, 332) == 2025
-    assert matching_published_year(2.296, 3.994, 332.0) == 2025
-    assert matching_published_year(2.3, 3.994, 332) is None
+def test_published_prices_keep_their_cents() -> None:
     assert Decimal("355.90") == PUBLISHED_TARIFFS[2026].fixed_charge
 
 

@@ -551,6 +551,8 @@ class _Client:
         (message,) = messages
         if message["type"] == "repairs/list_issues":
             return [{"issues": self.issues}]
+        if message["type"] == "system_log/list":
+            return [self.answers.get("system_log", [])]
         assert message["type"] == "frontend/get_translations"
         (domain,) = message["integration"]
         category = message["category"]
@@ -853,10 +855,38 @@ def test_the_repair_notices_must_be_those_the_prices_call_for(tmp_path: Path) ->
     unpriced = [Import((*_BILLS, _bill(date(2099, 7, 4), 31, 6000)))]
     assert notices([], priced)
     assert notices([issue("tariff_missing", "2025/26", "E2")], priced)
-    assert not notices([issue("statistics_rebuild_skipped")], priced)
+    assert not notices([issue("smart_meter")], priced)
     assert notices([issue("tariff_missing", "2099/00")], unpriced)
     assert not notices([issue("tariff_missing", "2098/99")], unpriced)
     assert not notices([], unpriced)
+
+
+def test_the_integrations_own_warnings_since_a_time_fail_the_check(
+    tmp_path: Path,
+) -> None:
+    since = datetime(2026, 10, 1, tzinfo=UTC)
+
+    def entry(name: str, level: str, when: datetime) -> dict[str, Any]:
+        return {
+            "name": name,
+            "level": level,
+            "message": [f"{level.lower()} from {name}"],
+            "timestamp": when.timestamp(),
+        }
+
+    def quiet(logged: list[dict[str, Any]]) -> bool:
+        journey = _journey(tmp_path, _Client({"system_log": logged}))
+        journey.check_quiet("x", since)
+        return journey.result.checks[-1].ok
+
+    later = since + timedelta(seconds=1)
+    earlier = since - timedelta(seconds=1)
+    assert quiet([])
+    # Home Assistant's own warning about any custom integration is not ours.
+    assert quiet([entry("homeassistant.loader", "WARNING", later)])
+    assert quiet([entry("custom_components.watercare.api", "WARNING", earlier)])
+    assert not quiet([entry("custom_components.watercare.api", "WARNING", later)])
+    assert not quiet([entry("custom_components.watercare", "ERROR", later)])
 
 
 def test_wait_gives_up_after_its_timeout(monkeypatch: pytest.MonkeyPatch) -> None:

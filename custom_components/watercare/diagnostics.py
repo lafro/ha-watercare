@@ -14,11 +14,7 @@ from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 
 from . import WatercareConfigEntry
-from .const import (
-    CONF_REFRESH_TOKEN,
-    CONF_WASTEWATER_RATIO,
-    LEGACY_EMAIL,
-)
+from .const import CONF_REFRESH_TOKEN, CONF_WASTEWATER_RATIO
 from .tariffs import (
     LATEST_PUBLISHED_YEAR,
     financial_year_label,
@@ -29,7 +25,7 @@ TO_REDACT = {
     CONF_USERNAME,
     CONF_PASSWORD,
     CONF_REFRESH_TOKEN,
-    LEGACY_EMAIL,
+    "email",  # the key 1.4.x stored the email under
     "account_number",
     "meter_number",
 }
@@ -43,6 +39,9 @@ async def async_get_config_entry_diagnostics(
     coordinator = entry.runtime_data
     data = coordinator.data
     last_exception = coordinator.last_exception
+    # The latest account read, which the smart-meter notice follows, even
+    # when the poll failed after it.
+    account = coordinator.api.account
     overrides = schedule_from_options(entry.options).overrides
     result: dict[str, Any] = {
         "config_entry": {
@@ -63,6 +62,11 @@ async def async_get_config_entry_diagnostics(
                 type(last_exception).__name__ if last_exception is not None else None
             ),
             "statistics_status": coordinator.statistics_status,
+            "meter_type": account.meter_type if account else None,
+            "smart_meter": account.smart_meter if account else None,
+            "meter_changed_to_smart": (
+                account.meter_changed_to_smart if account else None
+            ),
         },
     }
     if data is not None:
@@ -72,10 +76,11 @@ async def async_get_config_entry_diagnostics(
         result["coordinator"].update(
             {
                 "account_present": data.account is not None,
-                "meter_type": data.account.meter_type if data.account else None,
                 "billing_periods": data.period_count,
-                "skipped_periods": data.skipped_periods,
+                "unfinished_periods": data.unfinished_periods,
+                "unreadable_periods": data.unreadable_periods,
                 "duplicate_periods": data.duplicate_periods,
+                "refused_periods": data.refused_periods,
                 "latest_period": {
                     "start": period.start.isoformat(),
                     "end": period.end.isoformat(),
@@ -97,7 +102,7 @@ async def async_get_config_entry_diagnostics(
                 "last_import": {
                     "consumption_rows": imported.consumption_rows,
                     "cost_rows": imported.cost_rows,
-                    "rebuilt": imported.rebuilt,
+                    "refused_periods": len(imported.refused),
                     "first_day_without_tariff": (
                         imported.first_day_without_tariff.isoformat()
                         if imported.first_day_without_tariff

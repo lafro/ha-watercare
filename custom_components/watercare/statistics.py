@@ -1,13 +1,14 @@
 """Long-term statistics for the Energy dashboard.
 
-The 1.5.0 model (docs/statistics.md has the reasoning):
+The model (docs/statistics.md has the reasoning):
 
 * **Daily rows.** A bill covers about a month and HA statistics are hourly
   buckets. Each bill's volume is spread evenly over the days it covers, one
   row per Auckland day, instead of one spike after the period ends.
 * **Anchored sums.** A poll only adds rows for days after the last stored
   row, continuing that row's running sum. Stored history is never rewritten
-  by a normal poll, and a shorter API response cannot step the sum down.
+  or deleted, and a shorter API response cannot step the sum down. A
+  statistic with no stored rows is imported in full.
 * **Costs at the tariff in force.** Watercare prices a whole bill at the
   prices in force when its billing period starts, so every day of a bill is
   priced with the financial-year tariff (tariffs.py) of the bill's start
@@ -16,9 +17,6 @@ The 1.5.0 model (docs/statistics.md has the reasoning):
   lines are then spread evenly over its days. Cost rows stop at the first
   day whose bill has no known tariff and resume once one is available, so a
   missing price never becomes a wrong one.
-* **One-off rebuild.** Entries upgraded from 1.4.x hold one row per bill,
-  priced at a single flat tariff. ``async_rebuild`` clears the four
-  statistics and imports the full history in the new format, once.
 * **Never wait for the recorder in setup.** Writes are queued on the
   recorder. Reads first wait for the queue (``async_wait_for_queue``), which
   covers every write still waiting in it but not one the recorder is already
@@ -31,9 +29,8 @@ The 1.5.0 model (docs/statistics.md has the reasoning):
 from __future__ import annotations
 
 import logging
-import threading
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import ROUND_HALF_EVEN, Decimal
 from typing import Final, Literal
@@ -47,7 +44,6 @@ from homeassistant.components.recorder.models import (
 from homeassistant.components.recorder.statistics import (
     async_add_external_statistics,
     get_last_statistics,
-    statistics_during_period,
 )
 from homeassistant.const import UnitOfVolume
 from homeassistant.core import HomeAssistant, callback
@@ -62,7 +58,7 @@ from .const import (
     STAT_TOTAL_COST,
     STAT_WASTEWATER_COST,
 )
-from .models import BillingPeriod
+from .models import BillingPeriod, RefusedPeriod
 from .tariffs import (
     Tariff,
     TariffSchedule,
@@ -79,8 +75,6 @@ _PRECISION: Final = Decimal("0.000000001")
 _CENT: Final = Decimal("0.01")
 # Watercare charges wastewater on a volume rounded to this, in kilolitres.
 _WASTEWATER_VOLUME_STEP: Final = Decimal("0.01")
-# Litres. Stored sums are floats; anything above this is a real difference.
-_VOLUME_TOLERANCE: Final = Decimal("0.5")
 
 CostKind = Literal["total", "water", "wastewater"]
 
@@ -109,10 +103,8 @@ def pricing_date(period: BillingPeriod) -> date:
 
     Watercare prices a bill at the prices in force when its billing period
     starts: a bill that runs from June into July is charged entirely at the
-    earlier financial year's prices. A bill spanning 1 July 2026 matched this
-    to the cent, where a split by day was several dollars out; docs/tariffs.md
-    has the details. Change the rule here, and only here, if more bills show
-    otherwise.
+    earlier financial year's prices (docs/tariffs.md). Change the rule here,
+    and only here, if a bill shows otherwise.
     """
     return period.start
 
@@ -372,7 +364,8 @@ class ImportResult:
     """The day the cost statistics stop at, when a tariff is missing."""
     missing_tariff_year: int | None = None
     """The financial year whose prices that day's bill needs."""
-    rebuilt: bool = False
+    refused: tuple[RefusedPeriod, ...] = ()
+    """Bills the smart-meter guard left out because they overlap stored days."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -448,21 +441,21 @@ async def _async_read[T](
     """Read from the database after waiting for the recorder's queue.
 
     Reads go straight to the database, past the recorder's queue, so without
-    the wait a read could miss rows, or a clear, queued by an earlier update
-    and anchor new rows to stale ones (the 1.4.x rows, right after a rebuild).
+    the wait a read could miss rows queued by an earlier update and plan the
+    same days again from older sums.
 
     The read can still miss one write despite the wait
     (``async_wait_for_queue``): the last one queued, while the recorder is
-    committing it. After a rebuild, that is the import of a statistic the
-    rebuild has just cleared, so the read finds the statistic empty. That is
-    harmless because a statistic with no stored rows is always imported in
-    full, from zero (``_plan``): from the same bills, the import queues the
-    same rows again, and the recorder keeps one row per statistic and hour,
-    so they replace the identical rows the missed write stored. After a
-    normal import, the missed write continues its statistic from that
-    statistic's newest stored row, which the read still sees, so the next
-    import plans the same days again from the same row and its rows replace
-    the missed ones. ``tests/test_statistics_recorder.py`` pins the rule.
+    committing it. If that write was its statistic's first, the read finds
+    the statistic empty. That is harmless because a statistic with no stored
+    rows is always imported in full, from zero (``_plan``): from the same
+    bills, the import queues the same rows again, and the recorder keeps one
+    row per statistic and hour, so they replace the identical rows the missed
+    write stored. Otherwise the missed write continues its statistic from
+    that statistic's newest stored row, which the read still sees, so the
+    next import plans the same days again from the same row and its rows
+    replace the missed ones. ``tests/test_statistics_recorder.py`` pins the
+    rule.
     """
     await async_wait_for_queue(hass)
     return await get_instance(hass).async_add_executor_job(target, *args)
@@ -477,11 +470,20 @@ async def async_import(
     periods: Sequence[BillingPeriod],
     schedule: TariffSchedule,
     wastewater_ratio: Decimal,
+    *,
+    smart_meter: bool = False,
 ) -> ImportResult:
-    """Add rows for days after the stored history (normal poll).
+    """Add rows for days after the stored history.
 
-    Nothing is awaited between reading the stored history and queuing the new
-    rows, and nothing waits for the recorder to write them.
+    With nothing stored, every bill is imported. Nothing is awaited between
+    reading the stored history and queuing the new rows, and nothing waits
+    for the recorder to write them.
+
+    A bill that starts before the last stored day and ends after it is
+    normally spread over the days after it, with its whole volume
+    (``spread_period_days``). With ``smart_meter``, such a bill is refused
+    instead: a smart meter's periods have never been seen, and one that grew
+    or was revised would count the stored days' water twice.
     """
     stored = await _async_last_stored(hass)
     consumption = stored[STAT_CONSUMPTION]
@@ -490,15 +492,36 @@ async def async_import(
         if consumption is not None
         else None
     )
-    return _async_queue(
-        hass,
-        _plan(
-            periods=periods,
-            schedule=schedule,
-            wastewater_ratio=wastewater_ratio,
-            stored=stored,
-            after=after,
-        ),
+    refused: tuple[RefusedPeriod, ...] = ()
+    if smart_meter and after is not None:
+        refused = tuple(
+            RefusedPeriod(period, "overlaps_stored")
+            for period in periods
+            if period.start < after < period.end
+        )
+        periods = [
+            period for period in periods if not period.start < after < period.end
+        ]
+    plan = _plan(
+        periods=periods,
+        schedule=schedule,
+        wastewater_ratio=wastewater_ratio,
+        stored=stored,
+        after=after,
+    )
+    if consumption is None and plan.result.consumption_rows:
+        _LOGGER.info(
+            "Importing the Watercare history: %d days from %d billing periods",
+            plan.result.consumption_rows,
+            len(periods),
+        )
+    result = _async_queue(hass, plan)
+    return ImportResult(
+        consumption_rows=result.consumption_rows,
+        cost_rows=result.cost_rows,
+        first_day_without_tariff=result.first_day_without_tariff,
+        missing_tariff_year=result.missing_tariff_year,
+        refused=refused,
     )
 
 
@@ -543,9 +566,10 @@ def _plan(
             cost_rows += len(rows)
 
     if first_missing is not None:
-        _LOGGER.info(
-            "Watercare cost statistics paused at %s: no tariff is known for the "
-            "%s prices that bill needs",
+        # The tariff_missing repair notice tells the user; this repeats on
+        # every update while the prices are missing.
+        _LOGGER.debug(
+            "Cost statistics paused from %s: no prices for the %s financial year",
             first_missing[0].isoformat(),
             financial_year_label(first_missing[1]),
         )
@@ -612,101 +636,3 @@ def _cost_rows(
         running += amount
         rows.append({"start": start, "state": float(amount), "sum": float(running)})
     return rows, None
-
-
-async def async_rebuild_would_lose_history(
-    hass: HomeAssistant, periods: Sequence[BillingPeriod]
-) -> bool:
-    """Return whether replacing the stored history would lose any of it.
-
-    True when stored consumption starts before the oldest bill Watercare now
-    returns, or when the stored running total is larger than a rebuild would
-    reach by the same day (a bill Watercare no longer returns). Both checks
-    hold for the 1.4.x layout (one row per bill end) and for daily rows.
-    """
-    first_day = min(period.start for period in periods)
-    earlier = await _async_read(
-        hass,
-        statistics_during_period,
-        hass,
-        datetime(1970, 1, 1, tzinfo=UTC),
-        day_start(first_day),
-        {STAT_CONSUMPTION},
-        "hour",
-        None,
-        {"sum"},
-    )
-    if earlier.get(STAT_CONSUMPTION):
-        return True
-    stored = (await _async_last_stored(hass))[STAT_CONSUMPTION]
-    if stored is None:
-        return False
-    rebuilt = sum(
-        (
-            usage.litres
-            for usage in daily_usage(periods)
-            if day_start(usage.day) <= stored.start
-        ),
-        Decimal(0),
-    )
-    return stored.total > rebuilt + _VOLUME_TOLERANCE
-
-
-@callback
-def async_rebuild(
-    hass: HomeAssistant,
-    periods: Sequence[BillingPeriod],
-    schedule: TariffSchedule,
-    wastewater_ratio: Decimal,
-) -> tuple[ImportResult, threading.Event]:
-    """Replace the four statistics with the full history in the new format.
-
-    The caller has checked that the API's history reaches back at least as
-    far as the stored history, so nothing is lost.
-
-    The rows are worked out first. Then the clear
-    (``Recorder.async_clear_statistics``) and the imports are queued on the
-    recorder back to back, in this one call, which never yields to the event
-    loop: the imports are queued straight behind the clear, and no
-    cancellation can fall between them. A shutdown can: if its final-write
-    stage times out while the recorder runs the clear,
-    ``Recorder._async_close`` drops the imports still queued. The marker is
-    unset then, so the next start rebuilds.
-
-    Nothing here waits for the recorder; 1.5.0 waited for the clear inside
-    setup, and the recorder does not work through its queue until Home
-    Assistant has started. The coordinator waits for the queue afterwards, in
-    the background, before it records the rebuild as done.
-
-    Returns what was queued, and a flag the recorder thread sets once the
-    clear has succeeded (the clear's ``on_done``, which nothing waits on).
-    The recorder runs the clear only once: on a database error (a locked
-    SQLite database, a MariaDB lock-wait timeout) it logs the error and moves
-    on, and the imports queued behind the clear still run, on top of the old
-    rows. So the coordinator records the rebuild as done only if the flag is
-    set once it has waited for the queue.
-    """
-    plan = _plan(
-        periods=periods,
-        schedule=schedule,
-        wastewater_ratio=wastewater_ratio,
-        stored=dict.fromkeys(ALL_STATISTIC_IDS),
-        after=None,
-    )
-    _LOGGER.warning(
-        "Rebuilding the Watercare statistics in the 1.5.0 format from %d "
-        "billing periods: clearing %s, then importing daily rows",
-        len(periods),
-        ", ".join(ALL_STATISTIC_IDS),
-    )
-    cleared = threading.Event()
-    get_instance(hass).async_clear_statistics(
-        list(ALL_STATISTIC_IDS), on_done=cleared.set
-    )
-    result = _async_queue(hass, plan)
-    _LOGGER.warning(
-        "Watercare statistics rebuilt: %d consumption rows and %d cost rows queued",
-        result.consumption_rows,
-        result.cost_rows,
-    )
-    return replace(result, rebuilt=True), cleared

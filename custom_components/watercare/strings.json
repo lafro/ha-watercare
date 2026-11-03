@@ -3,19 +3,21 @@
     "step": {
       "user": {
         "title": "Connect to Watercare",
-        "description": "Sign in with your Watercare account. Mechanical (monthly-read) meters are supported. Costs are calculated from Watercare's published prices for each financial year.",
+        "description": "Sign in with your Watercare account. Manually read meters are supported; smart meters are not yet. Costs are calculated from Watercare's published prices for each financial year.",
         "data": {
           "username": "Email",
-          "password": "Password"
+          "password": "Password",
+          "wastewater_ratio": "Wastewater ratio"
         },
         "data_description": {
           "username": "The email address you use to sign in to the Watercare app or My Account.",
-          "password": "Your Watercare password. It is stored in Home Assistant and sent only to Watercare."
+          "password": "Your Watercare password. It is stored in Home Assistant and sent only to Watercare.",
+          "wastewater_ratio": "Share of metered water billed as wastewater. Shown on the bill as, for example, '@78.50%', entered here as 0.785. Most homes are 0.785 and apartments 0.95."
         }
       },
       "reauth_confirm": {
         "title": "Sign in to Watercare again",
-        "description": "Watercare no longer accepts the stored password for {username}. Enter the current password.",
+        "description": "Watercare no longer accepts the stored sign-in for {username}. Enter the current password. If you changed your Watercare email, close this and choose Reconfigure on the Watercare integration instead.",
         "data": {
           "password": "Password"
         },
@@ -25,7 +27,7 @@
       },
       "reconfigure": {
         "title": "Update the Watercare sign-in",
-        "description": "Change the email or password for this Watercare account. The account itself cannot be changed here; to switch accounts, remove Watercare and add it again.",
+        "description": "Change the email or password for this Watercare account. The account itself cannot be changed here; to switch accounts, remove Watercare, delete its four statistics under Settings → Tools → Statistics, and add it again.",
         "data": {
           "username": "Email",
           "password": "Password"
@@ -45,16 +47,14 @@
     },
     "abort": {
       "already_configured": "This Watercare account is already configured.",
-      "reauth_successful": "Re-authentication was successful.",
-      "reconfigure_successful": "The Watercare sign-in was updated.",
-      "wrong_account": "These credentials belong to a different Watercare account. Only one account can be added, so to switch accounts, remove Watercare and add it again."
+      "wrong_account": "These credentials belong to a different Watercare account. Only one account can be added, so to switch accounts, remove Watercare, delete its four statistics under Settings → Tools → Statistics, and add it again."
     }
   },
   "options": {
     "step": {
       "init": {
         "title": "Watercare prices",
-        "description": "Prices for bills that start in the {financial_year} financial year, including GST, pre-filled from Watercare's published price schedule or from your own earlier entry. Change them only if your bill shows different prices. Earlier years always use the published prices, and a change never reprices days that are already recorded.",
+        "description": "Prices for bills that start in the {financial_year} financial year, including GST, pre-filled from Watercare's published prices or from your own earlier entry. Change them only if your bill shows different prices. Earlier years use the published prices, or prices you entered for them, and a change never reprices days that are already recorded.",
         "data": {
           "wastewater_ratio": "Wastewater ratio",
           "water_rate": "Water rate",
@@ -70,7 +70,7 @@
       },
       "new_year": {
         "title": "Watercare prices",
-        "description": "This version of the integration does not know Watercare's prices for the {financial_year} financial year, so cost statistics pause at the first bill that starts on or after 1 July. Enter all three prices from a bill that starts in {financial_year} (including GST), or leave them empty to keep waiting for a release that includes them. Prices never reprice days that are already recorded.",
+        "description": "This version of the integration does not know Watercare's prices for the {financial_year} financial year, so cost statistics pause at the first bill that starts on or after 1 July. Enter all three prices (including GST) from Watercare's published price list or from a bill that starts in {financial_year}, or leave them empty to keep waiting for a release that includes them. Prices never reprice days that are already recorded.",
         "data": {
           "wastewater_ratio": "Wastewater ratio",
           "water_rate": "Water rate",
@@ -134,7 +134,7 @@
       "message": "Watercare rejected the stored sign-in."
     },
     "cannot_connect": {
-      "message": "Could not get data from Watercare: {error}"
+      "message": "Could not get data from Watercare ({error})."
     },
     "service_maintenance": {
       "message": "Watercare is down for maintenance."
@@ -146,10 +146,13 @@
       "message": "Watercare returned billing data in an unexpected format."
     },
     "no_billing_periods": {
-      "message": "Watercare returned no completed billing periods."
+      "message": "Watercare has no completed bill for this account yet. Watercare tries again by itself, and loads once the first bill is issued."
     },
     "missing_credentials": {
-      "message": "The Watercare config entry has no email or password. Remove it and add the integration again."
+      "message": "Watercare's saved settings have no email or password. Remove Watercare and add it again."
+    },
+    "smart_meter": {
+      "message": "Watercare reports a smart meter, which this version of the integration cannot read yet."
     }
   },
   "issues": {
@@ -159,7 +162,7 @@
         "step": {
           "init": {
             "title": "Watercare prices for {financial_year}",
-            "description": "Watercare changes its prices every 1 July and charges each bill at the prices in force when its billing period starts. This version of the integration does not know the {financial_year} prices yet, so water cost statistics are paused from the first bill that starts in {financial_year}; usage is still recorded. Copy the prices from that bill, or update the integration once a release includes them. Prices entered here never reprice days that are already recorded.",
+            "description": "Watercare changes its prices every 1 July and charges each bill at the prices in force when its billing period starts. This version of the integration does not know the {financial_year} prices, so water cost statistics pause at the first bill that starts in {financial_year}; water use is still recorded. Enter the prices from Watercare's published price list or from that bill, or update the integration once a release includes them. Prices entered here never reprice days already recorded.",
             "data": {
               "water_rate": "Water rate",
               "wastewater_rate": "Wastewater rate",
@@ -173,17 +176,13 @@
           }
         },
         "abort": {
-          "entry_not_found": "The Watercare config entry no longer exists."
+          "entry_not_found": "Watercare is no longer set up."
         }
       }
     },
     "smart_meter": {
       "title": "Watercare smart meters are not supported yet",
-      "description": "Watercare says this property has a smart water meter, or that its old meter was replaced with one. This version of the integration can only read the bills of manually read meters, so it cannot record a smart meter's water use yet. Until it can, no new bills appear in Home Assistant: if Watercare still has bills from the old meter, the Watercare sensors keep showing the last of them and the Energy dashboard's water use stops there; if it has none, Watercare shows as failing to set up and keeps retrying. Water use already recorded is kept. Smart-meter support needs real smart-meter data to test against first. This notice goes away by itself if Watercare reports a manually read meter again."
-    },
-    "statistics_rebuild_skipped": {
-      "title": "Watercare statistics were not rebuilt",
-      "description": "Version 1.5.0 records water use as daily rows, each bill priced at the tariff in force when it started. It did not rebuild the stored Watercare statistics because they reach back further than the bills Watercare now returns, and a rebuild would lose that history. New days are added after the stored history. See the statistics documentation for a manual rebuild."
+      "description": "Watercare reports a smart water meter at this property. This version of the integration can only read the bills of manually read meters, so it cannot record a smart meter's water use yet, and Watercare may show as unavailable or keep retrying its setup. Water use already recorded is kept. This notice goes away by itself if Watercare reports a manually read meter again."
     },
     "upgrade_required": {
       "title": "Watercare asks for a newer version",
