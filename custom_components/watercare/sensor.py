@@ -49,20 +49,19 @@ def _round(value: Any) -> float | None:
 
 
 def _usage_attributes(data: WatercareData) -> dict[str, Any]:
-    """Attributes kept on the usage sensor for dashboards built on 1.4.x."""
+    """Return the usage sensor's attributes, with their 1.4.x names.
+
+    Only what no other sensor shows: 1.6.0 dropped the attributes that
+    repeated another sensor's state.
+    """
     period = data.latest_period
     cost = data.latest_cost
     tariff = data.latest_tariff
     account = data.account
     return {
-        "billing_period_usage": period.usage_litres,
-        "daily_average": period.daily_average,
         "billing_period_from": period.raw_from,
         "billing_period_to": period.raw_to,
-        "reading_type": period.reading_type,
-        "household_efficiency_band": period.efficiency_band,
         "usage_to_lower_band": period.usage_to_lower_band,
-        "current_period_cost": _round(cost.total) if cost else None,
         "current_period_cost_consumption": _round(cost.water) if cost else None,
         "current_period_cost_wastewater": _round(cost.wastewater) if cost else None,
         "consumption_rate_per_1000L": _round_rate(tariff.water_rate)
@@ -72,11 +71,6 @@ def _usage_attributes(data: WatercareData) -> dict[str, Any]:
         if tariff
         else None,
         "tariff_year": financial_year_label(financial_year(pricing_date(period))),
-        "cost_currency": "NZD",
-        "account_balance": account.account_balance if account else None,
-        "amount_due": account.amount_due if account else None,
-        "overdue_amount": account.overdue_amount if account else None,
-        "payment_due_date": account.payment_due_date if account else None,
         "meter_type": account.meter_type if account else None,
     }
 

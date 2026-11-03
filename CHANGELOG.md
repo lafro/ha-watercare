@@ -9,7 +9,7 @@
 - **Clearer messages.** Home Assistant now says when Watercare's service reports maintenance, instead of reporting a connection error. Repair notices explain when Watercare asks for a newer version of its app (check HACS for an update) and when it reports a smart meter, which the integration cannot read yet. While it does, a billing period that overlaps recorded days or has no water use figure is skipped with a warning. Re-authentication and reconfiguration now say how to switch accounts.
 - **Renamed sensors.** **Daily average** is now **Average daily usage**, and **Payment due** is now **Due date**, as in Watercare's app.
 
-Upgrading from 1.5.x: the renamed sensors keep their entity IDs (`sensor.watercare_daily_average`, `sensor.watercare_payment_due`), and days already recorded keep the costs they were recorded with. An entry from 1.4.x is no longer upgraded; install 1.5.1 first.
+Upgrading from 1.5.x: the renamed sensors keep their entity IDs (`sensor.watercare_daily_average`, `sensor.watercare_payment_due`), and days already recorded keep the costs they were recorded with. **Last bill usage** no longer repeats other sensors' values as attributes (such as `billing_period_usage` or `account_balance`); use those sensors. An entry from 1.4.x is no longer upgraded; install 1.5.1 first.
 
 ## 1.5.1
 
