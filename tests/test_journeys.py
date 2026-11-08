@@ -915,6 +915,27 @@ def test_the_integrations_own_lines_above_debug_since_a_mark_fail_the_check(
     assert not quiet(debug, line("INFO", "custom_components.watercare"), since=10**6)
 
 
+@pytest.mark.parametrize(
+    "when",
+    [
+        "2026-10-01 12:00:00.123",
+        # From 2026.11, with the UTC offset.
+        "2026-11-08 15:53:26.123+13:00",
+        "2026-11-08 02:53:26.123-03:30",
+    ],
+)
+def test_a_log_line_of_either_timestamp_form_is_read(when: str) -> None:
+    line = journeys.LOG_LINE.match(
+        f"{when} DEBUG (MainThread) [custom_components.watercare.api] Signed in"
+    )
+    assert line is not None
+    assert (line["level"], line["name"], line["message"]) == (
+        "DEBUG",
+        "custom_components.watercare.api",
+        "Signed in",
+    )
+
+
 def test_wait_gives_up_after_its_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(journeys, "POLL_S", 0.01)
     calls: list[int] = []
