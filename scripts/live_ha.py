@@ -397,7 +397,12 @@ def http_store_version(python: Path) -> tuple[int, int] | None:
 
 
 def integrations_present(python: Path, domains: Iterable[str]) -> frozenset[str]:
-    """Return which of these built-in integrations the release ``python`` runs has."""
+    """Return which of these built-in integrations the release ``python`` runs has.
+
+    A check that fails stops the build: an integration it missed would not be
+    turned off.
+    """
+    names = sorted(domains)
     result = subprocess.run(  # noqa: S603
         [
             python,
@@ -406,12 +411,17 @@ def integrations_present(python: Path, domains: Iterable[str]) -> frozenset[str]
                 "import importlib.util, sys; print(*(d for d in sys.argv[1:] if "
                 "importlib.util.find_spec(f'homeassistant.components.{d}')))"
             ),
-            *sorted(domains),
+            *names,
         ],
         check=False,
         capture_output=True,
         text=True,
     )
+    if result.returncode != 0:
+        raise SystemExit(
+            f"Could not check whether Home Assistant has {', '.join(names)}, so "
+            "the instance cannot be shown to be contained"
+        )
     return frozenset(result.stdout.split())
 
 

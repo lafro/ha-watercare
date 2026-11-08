@@ -107,6 +107,60 @@ def test_only_the_releases_own_integrations_are_turned_off() -> None:
     ) == frozenset({"backup"})
 
 
+def test_a_failed_integration_check_stops_the_build(tmp_path: Path) -> None:
+    # Fail closed: skipping the Marketplace's entry would let it reach out.
+    failing = tmp_path / "python"
+    failing.write_text("#!/bin/sh\nexit 1\n")
+    failing.chmod(0o755)
+    with pytest.raises(SystemExit, match="cannot be shown to be contained"):
+        live_ha.integrations_present(failing, ["marketplace"])
+
+
+@pytest.mark.parametrize(
+    ("version", "form"), [("2026.11.0", (3, 1)), ("2026.10.4", (2, 2))]
+)
+@pytest.mark.parametrize("present", [frozenset({"marketplace"}), frozenset()])
+def test_the_build_turns_off_the_marketplace_where_the_release_has_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    version: str,
+    form: tuple[int, int],
+    present: frozenset[str],
+) -> None:
+    probed: list[tuple[Path, list[str]]] = []
+
+    def install_integration(state: Path, _domain: str, _ref: str | None) -> str:
+        (state / "config").mkdir()
+        return "the working tree"
+
+    def integrations_present(python: Path, domains: Any) -> frozenset[str]:
+        probed.append((python, sorted(domains)))
+        return present
+
+    monkeypatch.setattr(live_ha, "install_integration", install_integration)
+    monkeypatch.setattr(
+        live_ha, "install_home_assistant", lambda _state, _version: (version, form)
+    )
+    monkeypatch.setattr(live_ha, "integrations_present", integrations_present)
+    (tmp_path / "port").write_text("8124")
+
+    assert live_ha.build(tmp_path, DOMAIN, None, version) == version
+
+    assert probed == [(tmp_path / "venv" / "bin" / "python", ["marketplace"])]
+    storage = tmp_path / "config" / ".storage"
+    http = json.loads((storage / "http").read_text())
+    assert (http["version"], http["minor_version"]) == form
+    assert http["data"]["stable"]["server_host"] == ["127.0.0.1"]
+    entries = storage / "core.config_entries"
+    if present:
+        stored = json.loads(entries.read_text())["data"]["entries"]
+        assert [(e["domain"], e["disabled_by"]) for e in stored] == [
+            ("marketplace", "user")
+        ]
+    else:
+        assert not entries.exists()
+
+
 def test_the_entries_store_form_matches_the_home_assistant_under_test() -> None:
     # As for the web-server store: the compatibility workflow shows a change.
     from homeassistant import config_entries  # noqa: PLC0415
