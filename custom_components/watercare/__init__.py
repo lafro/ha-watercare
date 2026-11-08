@@ -56,6 +56,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: WatercareConfigEntry) ->
         refresh_token=entry.data.get(CONF_REFRESH_TOKEN),
         token_callback=_async_store_refresh_token,
         sign_in_session=sign_in_session_factory(hass),
+        # Stay with the property set up, if the login lists several.
+        account_number=entry.unique_id,
     )
     coordinator = WatercareCoordinator(hass, entry, api)
     await coordinator.async_config_entry_first_refresh()

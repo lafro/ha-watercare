@@ -33,7 +33,7 @@ Releases up to 1.4.1 came from a GitHub fork of the original. That history is no
 
 ## 1.6.0
 
-- **1.6.0** prices each bill as Watercare does, to the cent; shows the real amount of the latest bill, read from the app's API with the existing sign-in ([Decisions](#decisions)); names Watercare's maintenance answer, and raises a repair notice when Watercare asks for a newer app or reports a smart meter; asks for the wastewater ratio at setup; and gives two sensors the names Watercare's app uses, keeping existing entity ids. It removes the upgrade path from 1.4.x: the one-off statistics rebuild and the entry migration ([Decisions](#decisions)). Details: [CHANGELOG](../CHANGELOG.md).
+- **1.6.0** prices each bill as Watercare does, to the cent; shows the real amount of the latest bill, read from the app's API with the existing sign-in ([Decisions](#decisions)); names Watercare's maintenance answer, and raises a repair notice when Watercare asks for a newer app or reports a smart meter; and gives two sensors the names Watercare's app uses, keeping existing entity ids. It removes the upgrade path from 1.4.x: the one-off statistics rebuild and the entry migration ([Decisions](#decisions)). Details: [CHANGELOG](../CHANGELOG.md).
 
 ## Decisions
 
@@ -56,6 +56,8 @@ The ones worth remembering, with their status in 1.6.0.
 **Price a whole bill at the prices in force when it starts.** That is how Watercare charges a bill spanning 1 July, as observed; a split by day does not match. The rule is one function, `pricing_date`, so it can change if a bill shows otherwise. ✅ (observed; [tariffs.md](tariffs.md#how-a-bill-is-priced))
 
 **Pause costs rather than guess.** A year without known prices stops the cost statistics at its first bill and raises a repair notice; the forms never pre-fill an unknown year's prices, because a price saved by accident would resume the costs and stay in them. ✅ (code)
+
+**The wastewater ratio is not asked at setup.** 78.5% is Watercare's standard for metered homes in every schedule since 2018/19; exceptions such as apartments (95%) set it in the options and start again. No known field of Watercare's app API carries it; only the bill shows it. ✅ (code)
 
 **One Watercare account per Home Assistant instance.** The statistic ids are shared, so a second account would overwrite the first one's history (earlier releases allowed it, and the two collided). ✅ (code)
 

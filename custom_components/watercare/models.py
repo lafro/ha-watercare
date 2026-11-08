@@ -25,6 +25,13 @@ class WatercarePayloadError(ValueError):
     """Raised when a payload does not have the expected overall shape."""
 
 
+class WatercarePropertyNotListedError(Exception):
+    """The login lists several properties, none of them the entry's.
+
+    Not a connection problem: retrying will not bring the property back.
+    """
+
+
 def parse_timestamp(value: Any) -> datetime | None:
     """Parse a Watercare timestamp into an aware UTC datetime.
 
@@ -232,6 +239,16 @@ def _has_placeholder_date(item: Any) -> bool:
     return False
 
 
+def _account_number(record: Any) -> str | None:
+    """Return an account record's number as text, or None if it has none."""
+    if not isinstance(record, dict):
+        return None
+    number = record.get("accountNumber")
+    if not isinstance(number, str | int) or isinstance(number, bool):
+        return None
+    return str(number) or None
+
+
 @dataclass(frozen=True, slots=True)
 class AccountSummary:
     """The fields of a v1/account record that the integration uses."""
@@ -259,19 +276,33 @@ class AccountSummary:
         return self.meter_type is not None and self.meter_type.lower() != "mechanical"
 
     @classmethod
-    def from_json(cls, payload: Any) -> AccountSummary | None:
-        """Build a summary from the first account in a v1/account response."""
+    def from_json(
+        cls, payload: Any, account_number: str | None = None
+    ) -> AccountSummary | None:
+        """Build a summary from one account in a v1/account response.
+
+        A login whose list holds several records (one per property, it is
+        thought; never seen) gives the one with ``account_number``, and
+        raises ``WatercarePropertyNotListedError`` if others are numbered but
+        none has it. Records with no usable number make the answer
+        unreadable (None), as a single one does. Otherwise the first record
+        is used, whatever its number: that is the one setup takes, and on a
+        one-property login a change in how the number is written can then
+        never stop a working install.
+        """
         if not isinstance(payload, list) or not payload:
             return None
         record = payload[0]
-        if not isinstance(record, dict):
-            return None
-        account_number = record.get("accountNumber")
-        if not isinstance(account_number, str | int) or isinstance(
-            account_number, bool
-        ):
-            return None
-        if not str(account_number):
+        if account_number is not None and len(payload) > 1:
+            numbers = [_account_number(item) for item in payload]
+            if account_number in numbers:
+                record = payload[numbers.index(account_number)]
+            elif any(numbers):
+                raise WatercarePropertyNotListedError
+            else:
+                return None
+        number = _account_number(record)
+        if number is None:
             return None
         meters = record.get("meters")
         if not isinstance(meters, list):
@@ -287,7 +318,7 @@ class AccountSummary:
             for item in (record, *meters)
         )
         return cls(
-            account_number=str(account_number),
+            account_number=number,
             account_balance=_optional_number(record.get("accountBalance")),
             amount_due=_optional_number(record.get("amountDue")),
             overdue_amount=_optional_number(record.get("overdueAmount")),

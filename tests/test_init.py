@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from logging import DEBUG, ERROR, WARNING
@@ -18,6 +19,7 @@ from sqlalchemy.exc import OperationalError
 
 from custom_components.watercare import async_migrate_entry
 from custom_components.watercare.api import (
+    WatercareApi,
     WatercareAuthError,
     WatercareConnectionError,
     WatercareMaintenanceError,
@@ -25,6 +27,7 @@ from custom_components.watercare.api import (
     _default_sign_in_session,
 )
 from custom_components.watercare.const import (
+    ALL_STATISTIC_IDS,
     DOMAIN,
     STAT_CONSUMPTION,
     STAT_CONSUMPTION_COST,
@@ -36,15 +39,29 @@ from custom_components.watercare.statistics import bill_cost, day_start
 from custom_components.watercare.tariffs import PUBLISHED_TARIFFS, TariffSchedule
 
 from .common import (
+    ACCOUNT_NUMBER,
     ACCOUNT_PAYLOAD,
     EMAIL,
+    METER_NUMBER,
+    SECOND_ACCOUNT_NUMBER,
+    SECOND_METER_NUMBER,
+    THIRD_ACCOUNT_NUMBER,
     api_period,
     api_transaction,
     default_periods,
     default_transactions,
     make_entry,
+    properties_payload,
     stored_rows,
 )
+
+# The exception messages as a setup retry shows them: Home Assistant drops
+# a message's final full stop.
+SMART_METER_MESSAGE = (
+    "Watercare reports a smart meter at this property, which this version of "
+    "the integration cannot read yet"
+)
+PROPERTY_NOT_LISTED_MESSAGE = "Watercare no longer lists this property on your login"
 
 
 async def _setup(hass: HomeAssistant, entry: Any) -> None:
@@ -466,12 +483,15 @@ async def test_smart_meter_issue_is_raised_and_cleared(
 
 
 @pytest.mark.parametrize(
-    ("periods", "reason"),
+    ("periods", "reason", "message"),
     [
-        pytest.param({"return_value": []}, "smart meter", id="no-bills"),
+        pytest.param(
+            {"return_value": []}, "smart meter", SMART_METER_MESSAGE, id="no-bills"
+        ),
         pytest.param(
             {"side_effect": WatercareConnectionError("it answered with HTTP 404")},
             "HTTP 404",
+            "Could not get data from Watercare (it answered with HTTP 404)",
             id="bills-refused",
         ),
     ],
@@ -481,6 +501,7 @@ async def test_smart_meter_issue_without_bills(
     mock_api: dict[str, AsyncMock],
     periods: dict[str, Any],
     reason: str,
+    message: str,
 ) -> None:
     _use_account(mock_api, meterType="smartmeter-single")
     for name, value in periods.items():
@@ -490,6 +511,7 @@ async def test_smart_meter_issue_without_bills(
 
     assert entry.state is ConfigEntryState.SETUP_RETRY
     assert reason in str(entry.reason)
+    assert str(entry.reason) == message
     issue_id = f"smart_meter_{entry.entry_id}"
     assert ir.async_get(ha).async_get_issue(DOMAIN, issue_id) is not None
 
@@ -821,17 +843,23 @@ async def test_bill_spanning_1_july_keeps_its_cost_while_the_new_year_is_unknown
     assert usage.attributes["tariff_year"] == "2026/27"
 
 
+@pytest.mark.parametrize("ratio", [0.785, 0.95])
 async def test_first_import_end_to_end(
-    ha: HomeAssistant, mock_api: dict[str, AsyncMock]
+    ha: HomeAssistant, mock_api: dict[str, AsyncMock], ratio: float
 ) -> None:
-    entry = make_entry()
+    """The first import prices every bill at the entry's stored ratio.
+
+    Setup stores 0.785; a home with another ratio sets it in the options and
+    starts again, so the import must read it from there.
+    """
+    entry = make_entry(options={"wastewater_ratio": ratio})
     await _setup(ha, entry)
 
     coordinator = entry.runtime_data
     assert coordinator.statistics_status == "imported"
     # Every statistic holds one row per day.
     periods = parse_billing_periods(default_periods()).periods
-    costs = [bill_cost(p, TariffSchedule({}), Decimal("0.785")) for p in periods]
+    costs = [bill_cost(p, TariffSchedule({}), Decimal(str(ratio))) for p in periods]
     assert all(cost is not None for cost in costs)
     expected = {
         STAT_CONSUMPTION: 33000.0,
@@ -846,10 +874,11 @@ async def test_first_import_end_to_end(
             date(2026, 6, 3)
         )
         assert rows[-1]["sum"] == pytest.approx(final_sum), statistic_id
-    # The June bill spans 1 July and keeps its 2025/26 price.
-    assert costs[0] is not None
-    assert round(costs[0].total, 2) == Decimal("93.37")
-    assert expected[STAT_TOTAL_COST] == pytest.approx(93.37 + 76.79 + 104.89)
+    if ratio == 0.785:
+        # The June bill spans 1 July and keeps its 2025/26 price.
+        assert costs[0] is not None
+        assert round(costs[0].total, 2) == Decimal("93.37")
+        assert expected[STAT_TOTAL_COST] == pytest.approx(93.37 + 76.79 + 104.89)
 
     # The next poll adds nothing and keeps the rows.
     await _refresh(ha, coordinator)
@@ -887,3 +916,174 @@ async def test_statistics_retry_after_a_failed_read(
 
     assert coordinator.statistics_status == "imported"
     assert len(await stored_rows(ha, STAT_CONSUMPTION)) == 92
+
+
+# ----------------------------------------------- several properties, one login
+
+
+class _Login:
+    """A login whose v1/account lists several synthetic properties.
+
+    Each property has bills and payments of its own. The second's include a
+    bill after the first's newest, so following it would add days to the
+    statistics.
+    """
+
+    def __init__(self, *listed: str) -> None:
+        self.listed = list(listed)
+        # Records to list instead of the properties, when set.
+        self.records: list[Any] | None = None
+        self.requests: list[str] = []
+        self.periods: dict[str, Any] = {
+            ACCOUNT_NUMBER: default_periods(),
+            SECOND_ACCOUNT_NUMBER: [
+                api_period(date(2026, 9, 3), date(2026, 10, 2), 99000),
+                api_period(date(2026, 8, 4), date(2026, 9, 2), 55000),
+            ],
+            THIRD_ACCOUNT_NUMBER: [],
+        }
+        self.transactions: dict[str, Any] = {
+            ACCOUNT_NUMBER: default_transactions(),
+            SECOND_ACCOUNT_NUMBER: {
+                "items": [api_transaction(date(2026, 10, 4), 555.55, balance=555.55)]
+            },
+            THIRD_ACCOUNT_NUMBER: {"items": []},
+        }
+
+    async def get(self, api: WatercareApi, path: str) -> Any:
+        """Answer one of the client's GETs."""
+        del api
+        self.requests.append(path)
+        if path == "v1/account":
+            if self.records is not None:
+                return self.records
+            return properties_payload(*self.listed)
+        _, kind, number, _ = path.split("/")
+        return self.periods[number] if kind == "usage" else self.transactions[number]
+
+    def numbers_asked(self) -> set[str]:
+        """Return the account numbers the bills and payments were asked for."""
+        return {path.split("/")[2] for path in self.requests if path != "v1/account"}
+
+
+@pytest.fixture
+def login() -> Generator[_Login]:
+    """The client's requests answered by a login listing several properties."""
+    fake = _Login(ACCOUNT_NUMBER, SECOND_ACCOUNT_NUMBER)
+    with patch.object(WatercareApi, "_async_get", autospec=True, side_effect=fake.get):
+        yield fake
+
+
+@pytest.mark.parametrize(
+    "listed",
+    [
+        (SECOND_ACCOUNT_NUMBER, ACCOUNT_NUMBER),
+        (ACCOUNT_NUMBER, SECOND_ACCOUNT_NUMBER),
+    ],
+)
+async def test_a_login_with_several_properties_stays_with_the_entrys(
+    ha: HomeAssistant, login: _Login, listed: tuple[str, ...]
+) -> None:
+    login.listed = list(listed)
+    entry = make_entry()
+    await _setup(ha, entry)
+
+    assert entry.state is ConfigEntryState.LOADED
+    account = entry.runtime_data.data.account
+    assert account.account_number == ACCOUNT_NUMBER
+    assert account.meter_number == METER_NUMBER
+    assert login.numbers_asked() == {ACCOUNT_NUMBER}
+    assert ha.states.get("sensor.watercare_last_bill_usage").state == "13000"
+    assert ha.states.get("sensor.watercare_last_bill_amount").state == "98.76"
+
+
+async def test_a_change_in_the_order_of_the_properties_changes_nothing(
+    ha: HomeAssistant, login: _Login
+) -> None:
+    entry = make_entry()
+    await _setup(ha, entry)
+    coordinator = entry.runtime_data
+    before = {sid: await stored_rows(ha, sid) for sid in ALL_STATISTIC_IDS}
+    assert all(len(rows) == 92 for rows in before.values())
+
+    login.listed.reverse()
+    await _refresh(ha, coordinator)
+
+    assert coordinator.last_update_success
+    assert coordinator.data.account.account_number == ACCOUNT_NUMBER
+    assert login.numbers_asked() == {ACCOUNT_NUMBER}
+    after = {sid: await stored_rows(ha, sid) for sid in ALL_STATISTIC_IDS}
+    assert after == before
+    assert ha.states.get("sensor.watercare_last_bill_amount").state == "98.76"
+
+
+async def test_a_login_without_the_entrys_property_retries_setup(
+    ha: HomeAssistant, login: _Login, caplog: pytest.LogCaptureFixture
+) -> None:
+    login.listed = [SECOND_ACCOUNT_NUMBER, THIRD_ACCOUNT_NUMBER]
+    entry = make_entry()
+    await _setup(ha, entry)
+
+    assert entry.state is ConfigEntryState.SETUP_RETRY
+    assert entry.error_reason_translation_key == "property_not_listed"
+    assert str(entry.reason) == PROPERTY_NOT_LISTED_MESSAGE
+    assert login.numbers_asked() == set()
+    assert _warnings(caplog) == []
+
+
+async def test_several_records_without_numbers_are_an_unreadable_answer(
+    ha: HomeAssistant, login: _Login
+) -> None:
+    """Records that name no property retry as a connection problem.
+
+    As one record without a number does: the login has not been shown to
+    lack the entry's property.
+    """
+    login.records = [{"accountNumber": None}, {"accountNumber": ""}]
+    entry = make_entry()
+    await _setup(ha, entry)
+
+    assert entry.state is ConfigEntryState.SETUP_RETRY
+    assert entry.error_reason_translation_key == "cannot_connect"
+    assert str(entry.reason) == (
+        "Could not get data from Watercare (its answer had no account)"
+    )
+    assert login.numbers_asked() == set()
+
+
+async def test_a_running_entry_whose_property_is_no_longer_listed_goes_unavailable(
+    ha: HomeAssistant, login: _Login
+) -> None:
+    entry = make_entry()
+    await _setup(ha, entry)
+    coordinator = entry.runtime_data
+    before = {sid: await stored_rows(ha, sid) for sid in ALL_STATISTIC_IDS}
+
+    login.listed = [SECOND_ACCOUNT_NUMBER, THIRD_ACCOUNT_NUMBER]
+    await _refresh(ha, coordinator)
+
+    assert not coordinator.last_update_success
+    assert coordinator.last_exception.translation_key == "property_not_listed"
+    assert ha.states.get("sensor.watercare_last_bill_usage").state == "unavailable"
+    assert login.numbers_asked() == {ACCOUNT_NUMBER}
+    after = {sid: await stored_rows(ha, sid) for sid in ALL_STATISTIC_IDS}
+    assert after == before
+
+
+async def test_a_login_with_one_property_is_read_as_before(
+    ha: HomeAssistant, login: _Login
+) -> None:
+    """One listed property is used whatever its number, as in 1.6.0b2.
+
+    So a change in how Watercare writes the account number can never stop
+    a working install; only a login that lists several is checked.
+    """
+    login.listed = [SECOND_ACCOUNT_NUMBER]
+    entry = make_entry()
+    await _setup(ha, entry)
+
+    assert entry.state is ConfigEntryState.LOADED
+    account = entry.runtime_data.data.account
+    assert account.account_number == SECOND_ACCOUNT_NUMBER
+    assert account.meter_number == SECOND_METER_NUMBER
+    assert login.numbers_asked() == {SECOND_ACCOUNT_NUMBER}

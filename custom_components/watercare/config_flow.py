@@ -46,7 +46,7 @@ from .const import (
     NZ_TIMEZONE,
     STATISTICS_VERSION,
 )
-from .models import AccountSummary
+from .models import AccountSummary, WatercarePropertyNotListedError
 from .session import sign_in_session_factory
 from .tariffs import (
     PUBLISHED_TARIFFS,
@@ -74,11 +74,6 @@ USER_SCHEMA = probatio.Schema(
 REAUTH_SCHEMA = probatio.Schema({probatio.Required(CONF_PASSWORD): _PASSWORD})
 _RATIO = NumberSelector(
     NumberSelectorConfig(min=0, max=1, step=0.001, mode=NumberSelectorMode.BOX)
-)
-# Setup also asks for the wastewater ratio, so the first import, which prices
-# every bill Watercare still has, uses it. A later change never reprices them.
-SETUP_SCHEMA = USER_SCHEMA.extend(
-    {probatio.Required(CONF_WASTEWATER_RATIO, default=DEFAULT_WASTEWATER_RATIO): _RATIO}
 )
 
 
@@ -109,14 +104,19 @@ def tariff_schema() -> probatio.Schema:
 
 
 async def async_validate_login(
-    hass: HomeAssistant, email: str, password: str
+    hass: HomeAssistant, email: str, password: str, account_number: str | None = None
 ) -> tuple[AccountSummary, str | None]:
-    """Sign in and return the account and the refresh token."""
+    """Sign in and return the account and the refresh token.
+
+    With ``account_number``, a login that lists several properties gives
+    that one, or raises ``WatercarePropertyNotListedError`` without it.
+    """
     api = WatercareApi(
         email,
         password,
         async_get_clientsession(hass),
         sign_in_session=sign_in_session_factory(hass),
+        account_number=account_number,
     )
     await api.async_sign_in()
     account = await api.async_get_account()
@@ -130,10 +130,23 @@ class WatercareConfigFlow(ConfigFlow, domain=DOMAIN):
     MINOR_VERSION = 2
 
     async def _async_try_login(
-        self, email: str, password: str, errors: dict[str, str]
+        self,
+        email: str,
+        password: str,
+        errors: dict[str, str],
+        account_number: str | None = None,
     ) -> tuple[AccountSummary, str | None] | None:
+        """Sign in; on a failure, set the form's error and return None.
+
+        ``WatercarePropertyNotListedError`` is raised on, for the caller to
+        abort with ``wrong_account``.
+        """
         try:
-            return await async_validate_login(self.hass, email, password)
+            return await async_validate_login(
+                self.hass, email, password, account_number=account_number
+            )
+        except WatercarePropertyNotListedError:
+            raise
         except WatercareAuthError:
             errors["base"] = "invalid_auth"
         except WatercareMaintenanceError:
@@ -164,16 +177,17 @@ class WatercareConfigFlow(ConfigFlow, domain=DOMAIN):
                     user_input[CONF_USERNAME], user_input[CONF_PASSWORD], refresh_token
                 )
                 data[DATA_STATISTICS_VERSION] = STATISTICS_VERSION
+                # Watercare's standard ratio, stored so the options show it.
+                # Only a bill shows a home's own; one that differs is set in
+                # the options, and the statistics started again.
                 return self.async_create_entry(
                     title="Watercare",
                     data=data,
-                    options={
-                        CONF_WASTEWATER_RATIO: float(user_input[CONF_WASTEWATER_RATIO])
-                    },
+                    options={CONF_WASTEWATER_RATIO: DEFAULT_WASTEWATER_RATIO},
                 )
         return self.async_show_form(
             step_id="user",
-            data_schema=self.add_suggested_values_to_schema(SETUP_SCHEMA, user_input),
+            data_schema=self.add_suggested_values_to_schema(USER_SCHEMA, user_input),
             errors=errors,
         )
 
@@ -192,9 +206,12 @@ class WatercareConfigFlow(ConfigFlow, domain=DOMAIN):
         entry = self._get_reauth_entry()
         username = str(entry.data.get(CONF_USERNAME, ""))
         if user_input is not None:
-            result = await self._async_try_login(
-                username, user_input[CONF_PASSWORD], errors
-            )
+            try:
+                result = await self._async_try_login(
+                    username, user_input[CONF_PASSWORD], errors, entry.unique_id
+                )
+            except WatercarePropertyNotListedError:
+                return self.async_abort(reason="wrong_account")
             if result is not None:
                 account, refresh_token = result
                 await self.async_set_unique_id(account.account_number)
@@ -219,9 +236,15 @@ class WatercareConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         entry = self._get_reconfigure_entry()
         if user_input is not None:
-            result = await self._async_try_login(
-                user_input[CONF_USERNAME], user_input[CONF_PASSWORD], errors
-            )
+            try:
+                result = await self._async_try_login(
+                    user_input[CONF_USERNAME],
+                    user_input[CONF_PASSWORD],
+                    errors,
+                    entry.unique_id,
+                )
+            except WatercarePropertyNotListedError:
+                return self.async_abort(reason="wrong_account")
             if result is not None:
                 account, refresh_token = result
                 await self.async_set_unique_id(account.account_number)

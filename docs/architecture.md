@@ -72,6 +72,7 @@ Home Assistant, every 12 hours
 | Watercare answers with `"error": "service_maintenance"`, whatever the HTTP status | `WatercareMaintenanceError` | `UpdateFailed` (`service_maintenance`) | marks the sensors unavailable and tries again at the next poll; setup shows "Watercare is down for maintenance" |
 | Watercare answers with `"error": "upgrade_required"`, whatever the HTTP status | `WatercareUpgradeRequiredError` | `UpdateFailed` (`upgrade_required`) and the non-fixable repair issue `upgrade_required_<entry id>` | as above; the issue goes once a poll gets the account and the bills again |
 | Network error or timeout, any other HTTP error, a maintenance page at sign-in, malformed JSON, no account | `WatercareConnectionError` | `UpdateFailed` (`cannot_connect`) | as above |
+| The login lists several properties, none with the entry's account number | `WatercarePropertyNotListedError` | `UpdateFailed` (`property_not_listed`) | as above; re-authentication and reconfiguration abort with `wrong_account` |
 | The billing periods are not a list | `WatercarePayloadError` | `UpdateFailed` (`unexpected_response`) | as above |
 | No usable billing period | (none) | `UpdateFailed` (`no_billing_periods`, or `smart_meter` while Watercare reports one) | as above |
 
@@ -101,13 +102,13 @@ A `state_class` makes Home Assistant's recorder compile long-term statistics for
 |---|---|
 | `unique_id` | The Watercare account number, so the same account cannot be added twice, and re-authentication and reconfiguration refuse a different account (`wrong_account`). It never appears in diagnostics. |
 | `data` | `username` (the email), `password`, `refresh_token`, and `statistics_version: 2`, which 1.5.x reads as statistics already in its format, so going back to 1.5.1 continues them. |
-| `options` | `wastewater_ratio` (entered at setup, default 0.785), and `tariff_overrides`: prices entered for particular financial years, keyed by the year the financial year starts in. |
+| `options` | `wastewater_ratio` (default 0.785, Watercare's standard; changed in the options), and `tariff_overrides`: prices entered for particular financial years, keyed by the year the financial year starts in. |
 
 ✅ (code). The entry is version 1.2. `async_migrate_entry` refuses a 1.4.x entry (1.1) with a logged error that says to install 1.5.1 first, which migrates it, or to start again; 1.6.0 no longer migrates it. Home Assistant itself refuses a major version newer than 1, and a newer minor version loads as it is. ✅ (code)
 
 ## Setup, options, re-authentication and repairs
 
-- **Setup** asks for the email, password and wastewater ratio, signs in before creating the entry, sets the account number as the unique id, and shows `invalid_auth`, `service_maintenance`, `upgrade_required`, `cannot_connect` or `unknown` on failure. Only one entry is allowed: the statistic ids are shared, so a second account would overwrite the first one's history. ✅ (code)
+- **Setup** asks for the email and password, signs in before creating the entry, sets the account number as the unique id, and shows `invalid_auth`, `service_maintenance`, `upgrade_required`, `cannot_connect` or `unknown` on failure. Only one entry is allowed: the statistic ids are shared, so a second account would overwrite the first one's history. ✅ (code)
 - **Options** hold the wastewater ratio and the current financial year's prices, pre-filled from the published table or an earlier entry. For a year with no known prices the fields start empty (the `new_year` step), and all three or none must be entered, so saving the form unchanged can never store last year's prices as a guess. Saving reloads the entry. ✅ (code)
 - **Re-authentication** asks for the current password when Watercare rejects the stored one. **Reconfigure** changes the email and password for the same account. ✅ (code)
 - **Repairs:** when the cost statistics pause for a year without prices, or the current year has none yet, a fixable repair issue asks for that year's prices; fixing it stores them for that year only and reloads the entry. A second, non-fixable issue says smart meters are not supported yet ([Smart meters](#smart-meters)), and a third says Watercare asked for a newer version of its app ([Errors](#errors)). Setup deletes the retired `statistics_rebuild_skipped` notice that 1.5.x could leave behind. Removing the entry deletes them all and keeps the statistics. ✅ (code)

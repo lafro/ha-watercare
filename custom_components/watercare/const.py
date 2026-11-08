@@ -31,8 +31,8 @@ CONF_WATER_RATE: Final = "water_rate"
 CONF_WASTEWATER_RATE: Final = "wastewater_rate"
 CONF_FIXED_CHARGE: Final = "fixed_charge"
 
-# Residential wastewater volume is 78.5% of metered water (Watercare's
-# published standard; apartments are typically 95%).
+# Residential wastewater volume is 78.5% of metered water: Watercare's
+# standard for metered homes; apartments are 95%.
 DEFAULT_WASTEWATER_RATIO: Final = 0.785
 
 # External statistics. These ids are unchanged since 1.2.x, so the Energy

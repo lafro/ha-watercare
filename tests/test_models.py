@@ -12,6 +12,7 @@ from custom_components.watercare.models import (
     BillingPeriod,
     IssuedBill,
     WatercarePayloadError,
+    WatercarePropertyNotListedError,
     bill_period,
     local_date,
     parse_billing_periods,
@@ -23,9 +24,13 @@ from .common import (
     ACCOUNT_NUMBER,
     ACCOUNT_PAYLOAD,
     METER_NUMBER,
+    SECOND_ACCOUNT_NUMBER,
+    SECOND_METER_NUMBER,
+    THIRD_ACCOUNT_NUMBER,
     api_period,
     api_transaction,
     default_periods,
+    properties_payload,
 )
 
 
@@ -362,6 +367,81 @@ def test_account_summary_partial_record() -> None:
 )
 def test_account_summary_rejects_unusable_payloads(payload: object) -> None:
     assert AccountSummary.from_json(payload) is None
+    assert AccountSummary.from_json(payload, ACCOUNT_NUMBER) is None
+
+
+@pytest.mark.parametrize(
+    "listed",
+    [
+        (SECOND_ACCOUNT_NUMBER, ACCOUNT_NUMBER),
+        (ACCOUNT_NUMBER, SECOND_ACCOUNT_NUMBER),
+        (THIRD_ACCOUNT_NUMBER, SECOND_ACCOUNT_NUMBER, ACCOUNT_NUMBER),
+    ],
+)
+def test_account_summary_keeps_its_property_on_a_login_with_several(
+    listed: tuple[str, ...],
+) -> None:
+    account = AccountSummary.from_json(properties_payload(*listed), ACCOUNT_NUMBER)
+    assert account is not None
+    assert account.account_number == ACCOUNT_NUMBER
+    assert account.meter_number == METER_NUMBER
+
+
+def test_account_summary_without_a_property_takes_the_first_listed() -> None:
+    # As when the integration is added: the first property Watercare lists.
+    payload = properties_payload(SECOND_ACCOUNT_NUMBER, ACCOUNT_NUMBER)
+    account = AccountSummary.from_json(payload)
+    assert account is not None
+    assert account.account_number == SECOND_ACCOUNT_NUMBER
+    assert account.meter_number == SECOND_METER_NUMBER
+
+
+def test_account_summary_of_one_listed_property_is_used_whatever_its_number() -> None:
+    # A login that lists one property is read as in 1.6.0b2, so a change in
+    # how its account number is written can never stop a working install.
+    payload = properties_payload(SECOND_ACCOUNT_NUMBER)
+    account = AccountSummary.from_json(payload, ACCOUNT_NUMBER)
+    assert account is not None
+    assert account.account_number == SECOND_ACCOUNT_NUMBER
+
+
+def test_account_summary_matches_a_numeric_account_number() -> None:
+    payload = [{"accountNumber": 1234567}, {"accountNumber": 7654321}]
+    account = AccountSummary.from_json(payload, "7654321")
+    assert account is not None
+    assert account.account_number == "7654321"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        properties_payload(SECOND_ACCOUNT_NUMBER, THIRD_ACCOUNT_NUMBER),
+        # A record with no usable account number never matches.
+        [{"accountNumber": None}, *properties_payload(SECOND_ACCOUNT_NUMBER)],
+    ],
+)
+def test_account_summary_refuses_a_login_without_its_property(
+    payload: list[object],
+) -> None:
+    with pytest.raises(WatercarePropertyNotListedError):
+        AccountSummary.from_json(payload, ACCOUNT_NUMBER)
+    with pytest.raises(WatercarePropertyNotListedError):
+        AccountSummary.from_json(payload, "True")
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        ["not a dict", {"accountNumber": None}],
+        [{"accountNumber": True}, {"accountNumber": ""}],
+    ],
+)
+def test_account_summary_of_several_records_without_numbers_is_unreadable(
+    payload: list[object],
+) -> None:
+    # An answer that names no property is unreadable, as a one-record answer
+    # without a number is, not a login that lacks the entry's property.
+    assert AccountSummary.from_json(payload, ACCOUNT_NUMBER) is None
 
 
 # A transaction's date is a UTC timestamp. Whether it is Auckland midnight of

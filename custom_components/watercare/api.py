@@ -164,6 +164,7 @@ class WatercareApi:
         refresh_token: str | None = None,
         token_callback: Callable[[str], None] | None = None,
         sign_in_session: SignInSessionFactory | None = None,
+        account_number: str | None = None,
     ) -> None:
         """Initialise the client.
 
@@ -171,6 +172,9 @@ class WatercareApi:
         its own cookie jar (``sign_in_cookie_jar``). Home Assistant passes
         one built by its own helper; without it, a plain aiohttp session is
         used and closed afterwards.
+
+        ``account_number`` is the property the client stays with when the
+        login lists several (``AccountSummary.from_json``).
         """
         self._sign_in_session = sign_in_session or _default_sign_in_session
         self._email = email
@@ -181,6 +185,7 @@ class WatercareApi:
         self._access_token: str | None = None
         self._access_token_expires_at = 0.0
         self._account: AccountSummary | None = None
+        self._account_number = account_number
 
     @property
     def account(self) -> AccountSummary | None:
@@ -414,9 +419,13 @@ class WatercareApi:
         raise WatercareConnectionError("no answer")  # pragma: no cover
 
     async def async_get_account(self) -> AccountSummary:
-        """Fetch the account record (balance, due date, meter)."""
+        """Fetch the account record (balance, due date, meter).
+
+        Raises ``WatercarePropertyNotListedError`` when the login lists
+        several properties without the client's own.
+        """
         payload = await self._async_get("v1/account")
-        account = AccountSummary.from_json(payload)
+        account = AccountSummary.from_json(payload, self._account_number)
         if account is None:
             raise WatercareConnectionError("its answer had no account")
         self._account = account

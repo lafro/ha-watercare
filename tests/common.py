@@ -39,6 +39,8 @@ from .watercare_http import (
     EMAIL,
     METER_NUMBER,
     PASSWORD,
+    SECOND_ACCOUNT_NUMBER,
+    SECOND_METER_NUMBER,
     account_payload,
     api_period,
     api_transaction,
@@ -46,8 +48,30 @@ from .watercare_http import (
 
 REFRESH_TOKEN = "synthetic-refresh-token"
 ENTRY_ID = "watercare_test_entry"
+# A third property, for a login that lists several without the entry's.
+THIRD_ACCOUNT_NUMBER = "3000003-03"
+THIRD_METER_NUMBER = "TEST-METER-0003"
 
 ACCOUNT_PAYLOAD: list[dict[str, Any]] = account_payload(ACCOUNT_NUMBER, METER_NUMBER)
+
+_METERS = {
+    ACCOUNT_NUMBER: METER_NUMBER,
+    SECOND_ACCOUNT_NUMBER: SECOND_METER_NUMBER,
+    THIRD_ACCOUNT_NUMBER: THIRD_METER_NUMBER,
+}
+
+
+def properties_payload(*numbers: str) -> list[dict[str, Any]]:
+    """Return a v1/account response listing these properties, in this order.
+
+    Several on one login has never been seen; each property is taken to be a
+    record of its own, keyed by its account number.
+    """
+    return [
+        record
+        for position, number in enumerate(numbers, start=1)
+        for record in account_payload(number, _METERS[number], user_account_id=position)
+    ]
 
 
 def default_periods() -> list[dict[str, Any]]:

@@ -4,7 +4,6 @@
 
 - **New sensor: Last bill amount.** Your latest bill's total, as Watercare issued it. Its attributes are the bill's date and, when it can be matched, the billing period it charges for. **Last bill cost** is still worked out from Watercare's published prices, so it leaves out any other charges or credits on the bill.
 - **Costs to the cent.** The water, wastewater and fixed charges are now worked out as Watercare's bills are, to the cent: each line rounded, and 366 days in a year with a 29 February.
-- **Wastewater ratio at setup.** Setup asks for your wastewater ratio, so the first import prices every bill at it.
 - **Adding Watercare again continues its history**, adding only days after those already recorded. To start afresh, delete its four statistics under **Settings → Tools → Statistics** first.
 - **Clearer messages.** Home Assistant now says when Watercare's service reports maintenance, instead of reporting a connection error. Repair notices explain when Watercare asks for a newer version of its app (check HACS for an update) and when it reports a smart meter: the integration reads only billing periods, not a smart meter's own readings. While Watercare reports one, a billing period that overlaps recorded days or the period before it, or has no water use figure, is skipped with a warning. Re-authentication and reconfiguration now say how to switch accounts.
 - **Renamed sensors.** **Daily average** is now **Average daily usage**, and **Payment due** is now **Due date**, as in Watercare's app.

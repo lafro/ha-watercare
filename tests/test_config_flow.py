@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Generator
 from decimal import Decimal
 from logging import DEBUG, INFO
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -28,7 +29,6 @@ from custom_components.watercare.config_flow import (
 )
 from custom_components.watercare.const import (
     ALL_STATISTIC_IDS,
-    CONF_WASTEWATER_RATIO,
     DOMAIN,
     STAT_WASTEWATER_COST,
 )
@@ -41,8 +41,11 @@ from .common import (
     ACCOUNT_PAYLOAD,
     EMAIL,
     PASSWORD,
+    SECOND_ACCOUNT_NUMBER,
+    THIRD_ACCOUNT_NUMBER,
     default_periods,
     make_entry,
+    properties_payload,
     stored_rows,
 )
 
@@ -75,7 +78,11 @@ async def test_user_flow_creates_entry(
     )
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "user"
-    assert _defaults(result) == {CONF_WASTEWATER_RATIO: 0.785}
+    # The ratio is Watercare's standard until changed in the options.
+    assert {str(key) for key in result["data_schema"].schema} == {
+        CONF_USERNAME,
+        CONF_PASSWORD,
+    }
 
     result = await ha.config_entries.flow.async_configure(
         result["flow_id"], {CONF_USERNAME: EMAIL, CONF_PASSWORD: PASSWORD}
@@ -96,54 +103,30 @@ async def test_user_flow_creates_entry(
     mock_setup.assert_awaited_once()
 
 
-def _defaults(result: dict) -> dict[str, object]:
-    """Return the form's fields that have a default, with the default."""
-    return {
-        str(key): key.default()
-        for key in result["data_schema"].schema
-        if callable(getattr(key, "default", None))
-    }
-
-
-async def test_user_flow_takes_the_wastewater_ratio(
-    ha: HomeAssistant, mock_login: AsyncMock, mock_setup: AsyncMock
-) -> None:
-    result = await ha.config_entries.flow.async_init(
-        DOMAIN, context={"source": SOURCE_USER}
-    )
-    result = await ha.config_entries.flow.async_configure(
-        result["flow_id"],
-        {CONF_USERNAME: EMAIL, CONF_PASSWORD: PASSWORD, CONF_WASTEWATER_RATIO: 0.95},
-    )
-
-    assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert result["options"] == {"wastewater_ratio": 0.95}
-
-
 async def test_first_install_from_the_form(
     ha: HomeAssistant,
     mock_login: AsyncMock,
     mock_api: dict[str, AsyncMock],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Add Watercare as a new user would: every bill, at the entered ratio."""
+    """Add Watercare as a new user would: every bill, at the standard ratio."""
     caplog.set_level(DEBUG, logger="custom_components.watercare")
     result = await ha.config_entries.flow.async_init(
         DOMAIN, context={"source": SOURCE_USER}
     )
     result = await ha.config_entries.flow.async_configure(
-        result["flow_id"],
-        {CONF_USERNAME: EMAIL, CONF_PASSWORD: PASSWORD, CONF_WASTEWATER_RATIO: 0.95},
+        result["flow_id"], {CONF_USERNAME: EMAIL, CONF_PASSWORD: PASSWORD}
     )
     await ha.async_block_till_done(wait_background_tasks=True)
 
     entry = result["result"]
     assert entry.state is ConfigEntryState.LOADED
+    assert entry.options == {"wastewater_ratio": 0.785}
     assert entry.runtime_data.statistics_status == "imported"
     for statistic_id in ALL_STATISTIC_IDS:
         assert len(await stored_rows(ha, statistic_id)) == 92, statistic_id
     periods = parse_billing_periods(default_periods()).periods
-    costs = [bill_cost(p, TariffSchedule({}), Decimal("0.95")) for p in periods]
+    costs = [bill_cost(p, TariffSchedule({}), Decimal("0.785")) for p in periods]
     wastewater = sum(cost.wastewater for cost in costs if cost is not None)
     rows = await stored_rows(ha, STAT_WASTEWATER_COST)
     assert rows[-1]["sum"] == pytest.approx(float(wastewater))
@@ -241,7 +224,9 @@ async def test_reauth_updates_the_password(
     assert result["reason"] == "reauth_successful"
     assert entry.data[CONF_PASSWORD] == "changed-password"
     assert entry.data["refresh_token"] == "new-refresh-token"
-    mock_login.assert_awaited_with(ha, EMAIL, "changed-password")
+    mock_login.assert_awaited_with(
+        ha, EMAIL, "changed-password", account_number=ACCOUNT_NUMBER
+    )
 
 
 async def test_reauth_error_and_wrong_account(
@@ -478,3 +463,133 @@ async def test_reconfigure_without_a_refresh_token(
 
     assert result["reason"] == "reconfigure_successful"
     assert "refresh_token" not in entry.data
+
+
+# ----------------------------------------------- several properties, one login
+
+
+@pytest.fixture
+def listed() -> Generator[list[str]]:
+    """Sign in for real, to a login that lists these properties in order."""
+    numbers: list[str] = []
+
+    async def _get(api: WatercareApi, path: str) -> Any:
+        del api
+        assert path == "v1/account"
+        return properties_payload(*numbers)
+
+    with (
+        patch.object(WatercareApi, "async_sign_in", autospec=True),
+        patch.object(WatercareApi, "_async_get", autospec=True, side_effect=_get),
+    ):
+        yield numbers
+
+
+async def test_user_flow_takes_the_first_property_listed(
+    ha: HomeAssistant, listed: list[str], mock_setup: AsyncMock
+) -> None:
+    listed[:] = [SECOND_ACCOUNT_NUMBER, ACCOUNT_NUMBER]
+    result = await ha.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_USER}
+    )
+    result = await ha.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_USERNAME: EMAIL, CONF_PASSWORD: PASSWORD}
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["result"].unique_id == SECOND_ACCOUNT_NUMBER
+
+
+@pytest.mark.parametrize(
+    "order",
+    [
+        (ACCOUNT_NUMBER, SECOND_ACCOUNT_NUMBER),
+        (SECOND_ACCOUNT_NUMBER, ACCOUNT_NUMBER),
+    ],
+)
+async def test_reauth_and_reconfigure_find_the_property_among_several(
+    ha: HomeAssistant,
+    listed: list[str],
+    mock_setup: AsyncMock,
+    order: tuple[str, str],
+) -> None:
+    listed[:] = order
+    entry = make_entry()
+    entry.add_to_hass(ha)
+
+    result = await entry.start_reauth_flow(ha)
+    result = await ha.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_PASSWORD: "changed-password"}
+    )
+    assert result["reason"] == "reauth_successful"
+    assert entry.data[CONF_PASSWORD] == "changed-password"
+
+    result = await entry.start_reconfigure_flow(ha)
+    result = await ha.config_entries.flow.async_configure(
+        result["flow_id"],
+        {CONF_USERNAME: "new@example.com", CONF_PASSWORD: "new-password"},
+    )
+    assert result["reason"] == "reconfigure_successful"
+    assert entry.data[CONF_USERNAME] == "new@example.com"
+    assert entry.unique_id == ACCOUNT_NUMBER
+
+
+async def test_reauth_and_reconfigure_refuse_a_login_without_the_property(
+    ha: HomeAssistant, listed: list[str], mock_setup: AsyncMock
+) -> None:
+    listed[:] = [SECOND_ACCOUNT_NUMBER, THIRD_ACCOUNT_NUMBER]
+    entry = make_entry()
+    entry.add_to_hass(ha)
+
+    result = await entry.start_reauth_flow(ha)
+    result = await ha.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_PASSWORD: "changed-password"}
+    )
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "wrong_account"
+
+    result = await entry.start_reconfigure_flow(ha)
+    result = await ha.config_entries.flow.async_configure(
+        result["flow_id"],
+        {CONF_USERNAME: "new@example.com", CONF_PASSWORD: "new-password"},
+    )
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "wrong_account"
+    assert entry.data[CONF_USERNAME] == EMAIL
+    assert entry.data[CONF_PASSWORD] == PASSWORD
+
+
+async def test_reauth_and_reconfigure_read_records_without_numbers_as_unreadable(
+    ha: HomeAssistant, mock_setup: AsyncMock
+) -> None:
+    """Several records that name no property are an unreadable answer.
+
+    Not ``wrong_account``, whose text says to remove Watercare: the login
+    has not been shown to lack the entry's property.
+    """
+    entry = make_entry()
+    entry.add_to_hass(ha)
+    unnumbered = [{"accountNumber": None}, {"accountNumber": ""}]
+
+    with (
+        patch.object(WatercareApi, "async_sign_in", autospec=True),
+        patch.object(
+            WatercareApi, "_async_get", autospec=True, return_value=unnumbered
+        ),
+    ):
+        result = await entry.start_reauth_flow(ha)
+        result = await ha.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_PASSWORD: "changed-password"}
+        )
+        assert result["type"] is FlowResultType.FORM
+        assert result["errors"] == {"base": "cannot_connect"}
+
+        result = await entry.start_reconfigure_flow(ha)
+        result = await ha.config_entries.flow.async_configure(
+            result["flow_id"],
+            {CONF_USERNAME: "new@example.com", CONF_PASSWORD: "new-password"},
+        )
+        assert result["type"] is FlowResultType.FORM
+        assert result["errors"] == {"base": "cannot_connect"}
+    assert entry.data[CONF_USERNAME] == EMAIL
+    assert entry.data[CONF_PASSWORD] == PASSWORD
