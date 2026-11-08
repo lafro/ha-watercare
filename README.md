@@ -23,7 +23,7 @@ Based on the MIT-licensed [brunsy/ha-watercare](https://github.com/brunsy/ha-wat
 ## Installation
 
 1. Install Watercare, or use the button above:
-   - **Home Assistant 2026.11 or newer:** go to **Settings → Marketplace → Add from link**, enter `https://github.com/lafro/ha-watercare` and select **Add**, connecting GitHub when asked. Then open **Watercare** and select **Install**; setup then opens by itself, normally with no restart.
+   - **Home Assistant 2026.11 or newer:** go to **Settings → Marketplace → Add from link**, enter `https://github.com/lafro/ha-watercare` and select **Add**, connecting GitHub when asked. Then open **Watercare** and select **Install**; setup opens by itself, normally with no restart.
    - **Home Assistant 2026.10:** in HACS, open the menu (⋮), choose **Custom repositories**, add `https://github.com/lafro/ha-watercare` with type **Integration**, download **Watercare**, and restart Home Assistant.
 2. On 2026.10, or if setup didn't open, go to **Settings → Devices & services → Add integration → Watercare**.
 3. Sign in with the email address and password you use for the Watercare app or My Account. Home Assistant keeps the sign-in, with a renewable token, and sends it only to Watercare.
