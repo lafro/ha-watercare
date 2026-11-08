@@ -8,7 +8,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from homeassistant.core import callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
@@ -44,6 +44,7 @@ from .models import (
     RefusalReason,
     RefusedPeriod,
     WatercarePayloadError,
+    WatercarePropertyNotListedError,
     bill_period,
     parse_billing_periods,
     parse_bills,
@@ -144,33 +145,7 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
 
     async def _async_update_data(self) -> WatercareData:
         """Fetch bills and the account; the statistics follow in the background."""
-        try:
-            account = await self.api.async_get_account()
-            # Before the bills: a smart-meter account may have none, or get
-            # an error for them.
-            self._async_check_meter(account)
-            payload = await self.api.async_get_billing_periods()
-        except WatercareAuthError as err:
-            raise ConfigEntryAuthFailed(
-                translation_domain=DOMAIN, translation_key="auth_failed"
-            ) from err
-        except WatercareMaintenanceError as err:
-            raise UpdateFailed(
-                translation_domain=DOMAIN, translation_key="service_maintenance"
-            ) from err
-        except WatercareUpgradeRequiredError as err:
-            self._async_check_upgrade(required=True)
-            raise UpdateFailed(
-                translation_domain=DOMAIN, translation_key="upgrade_required"
-            ) from err
-        except WatercareConnectionError as err:
-            raise UpdateFailed(
-                translation_domain=DOMAIN,
-                translation_key="cannot_connect",
-                translation_placeholders={"error": str(err)},
-            ) from err
-        self._async_check_upgrade(required=False)
-
+        account, payload = await self._async_fetch()
         try:
             parsed = parse_billing_periods(
                 payload,
@@ -237,6 +212,40 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
             last_bill_period=bill_period(last_bill, periods) if last_bill else None,
             last_bill_fetch_failed=fetch_failed,
         )
+
+    async def _async_fetch(self) -> tuple[AccountSummary, Any]:
+        """Read the account and its bills, as an update failure if that fails."""
+        try:
+            account = await self.api.async_get_account()
+            # Before the bills: a smart-meter account may have none, or get
+            # an error for them.
+            self._async_check_meter(account)
+            payload = await self.api.async_get_billing_periods()
+        except WatercareAuthError as err:
+            raise ConfigEntryAuthFailed(
+                translation_domain=DOMAIN, translation_key="auth_failed"
+            ) from err
+        except WatercarePropertyNotListedError as err:
+            raise UpdateFailed(
+                translation_domain=DOMAIN, translation_key="property_not_listed"
+            ) from err
+        except WatercareMaintenanceError as err:
+            raise UpdateFailed(
+                translation_domain=DOMAIN, translation_key="service_maintenance"
+            ) from err
+        except WatercareUpgradeRequiredError as err:
+            self._async_check_upgrade(required=True)
+            raise UpdateFailed(
+                translation_domain=DOMAIN, translation_key="upgrade_required"
+            ) from err
+        except WatercareConnectionError as err:
+            raise UpdateFailed(
+                translation_domain=DOMAIN,
+                translation_key="cannot_connect",
+                translation_placeholders={"error": str(err)},
+            ) from err
+        self._async_check_upgrade(required=False)
+        return account, payload
 
     async def _async_update_last_bill(self) -> bool:
         """Read the newest bill's amount; return whether the transactions loaded.

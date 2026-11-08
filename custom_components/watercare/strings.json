@@ -3,16 +3,14 @@
     "step": {
       "user": {
         "title": "Connect to Watercare",
-        "description": "Sign in with your Watercare account. Manually read meters are supported; smart meters are not yet. Costs are calculated from Watercare's published prices for each financial year.",
+        "description": "Sign in with your Watercare account. Manually read meters are supported; smart meters are not yet. Costs are calculated from Watercare's published residential prices, with wastewater at its standard 78.5% of water use.",
         "data": {
           "username": "Email",
-          "password": "Password",
-          "wastewater_ratio": "Wastewater ratio"
+          "password": "Password"
         },
         "data_description": {
           "username": "The email address you use to sign in to the Watercare app or My Account.",
-          "password": "Your Watercare password. It is stored in Home Assistant and sent only to Watercare.",
-          "wastewater_ratio": "Share of metered water billed as wastewater. Shown on the bill as, for example, '@78.50%', entered here as 0.785. Most homes are 0.785 and apartments 0.95. The first import prices all your history with it; a later change in the options applies only to new days."
+          "password": "Your Watercare password. It is stored in Home Assistant and sent only to Watercare."
         }
       },
       "reauth_confirm": {
@@ -62,7 +60,7 @@
           "fixed_charge": "Wastewater fixed charge"
         },
         "data_description": {
-          "wastewater_ratio": "Share of metered water billed as wastewater. Shown on the bill as, for example, '@78.50%', entered here as 0.785. Most homes are 0.785 and apartments 0.95.",
+          "wastewater_ratio": "Share of metered water billed as wastewater, as on your bill: 0.785 (78.5%) for most homes, 0.95 for apartments. Days already recorded keep their cost.",
           "water_rate": "Per 1,000 litres of water, including GST. Shown on the bill under 'Charge details'.",
           "wastewater_rate": "Per 1,000 litres of wastewater, including GST.",
           "fixed_charge": "Per year, including GST. Shown on the bill under 'Fixed charges' as a 'pa' amount."
@@ -78,7 +76,7 @@
           "fixed_charge": "Wastewater fixed charge"
         },
         "data_description": {
-          "wastewater_ratio": "Share of metered water billed as wastewater. Shown on the bill as, for example, '@78.50%', entered here as 0.785. Most homes are 0.785 and apartments 0.95.",
+          "wastewater_ratio": "Share of metered water billed as wastewater, as on your bill: 0.785 (78.5%) for most homes, 0.95 for apartments. Days already recorded keep their cost.",
           "water_rate": "Per 1,000 litres of water, including GST. Shown on the bill under 'Charge details'.",
           "wastewater_rate": "Per 1,000 litres of wastewater, including GST.",
           "fixed_charge": "Per year, including GST. Shown on the bill under 'Fixed charges' as a 'pa' amount."
@@ -152,7 +150,10 @@
       "message": "Watercare's saved settings have no email or password. Remove Watercare and add it again."
     },
     "smart_meter": {
-      "message": "Watercare reports a smart meter, and none of its billing periods could be recorded safely."
+      "message": "Watercare reports a smart meter at this property, which this version of the integration cannot read yet."
+    },
+    "property_not_listed": {
+      "message": "Watercare no longer lists this property on your login."
     }
   },
   "issues": {
@@ -182,7 +183,7 @@
     },
     "smart_meter": {
       "title": "Watercare smart meters are not supported yet",
-      "description": "Watercare reports a smart water meter at this property. This version of the integration reads only billing periods, not a smart meter's own readings, and skips a billing period it cannot record safely, so some water use may be missing, and Watercare may show as unavailable or keep retrying its setup. Water use already recorded is kept. This notice goes away by itself if Watercare reports a manually read meter again."
+      "description": "Watercare reports a smart water meter at this property. This version of the integration reads only the billing periods of manually read meters, which Watercare may not list for a smart meter. New water use may then not be recorded, and Watercare may show as unavailable or keep retrying its setup. Water use already recorded is kept. This notice goes away by itself if Watercare reports a manually read meter again."
     },
     "upgrade_required": {
       "title": "Watercare asks for a newer version",

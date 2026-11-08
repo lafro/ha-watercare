@@ -25,9 +25,9 @@ Based on the MIT-licensed [brunsy/ha-watercare](https://github.com/brunsy/ha-wat
 1. In HACS, open the menu (⋮), choose **Custom repositories**, add `https://github.com/lafro/ha-watercare` with type **Integration**, then download **Watercare**. Or use the button above.
 2. Restart Home Assistant.
 3. Go to **Settings → Devices & services → Add integration → Watercare**.
-4. Sign in with the email address and password you use for the Watercare app or My Account, and enter your wastewater ratio: the share of your water billed as wastewater, 0.785 for most homes and 0.95 for apartments. Your bill shows it as, for example, "@78.50%". Home Assistant keeps the sign-in, with a renewable token, and sends it only to Watercare.
+4. Sign in with the email address and password you use for the Watercare app or My Account. Home Assistant keeps the sign-in, with a renewable token, and sends it only to Watercare.
 
-The first update imports every bill at that ratio. Upgrading from 1.4.x? Install 1.5.1 first, then this version.
+The first update imports every bill Watercare still lists. Upgrading from 1.4.x? Install 1.5.1 first, then this version.
 
 ## Options
 
@@ -35,7 +35,7 @@ The first update imports every bill at that ratio. Upgrading from 1.4.x? Install
 
 | Option | Meaning |
 |---|---|
-| Wastewater ratio | As entered at setup. A change applies only to days not yet recorded. |
+| Wastewater ratio | The share of your water billed as wastewater: 0.785, Watercare's standard for homes, unless your bill shows another percentage (apartments are 0.95). Days already recorded keep their cost; to reprice them, change it, then [start again](docs/statistics.md#starting-again). |
 | Water rate, Wastewater rate, Wastewater fixed charge | This financial year's prices, including GST. They are filled in from Watercare's published prices when the integration has them; otherwise enter all three from Watercare's price list or your bill, or leave them empty. Earlier years use the published prices, or prices you entered for them, and a change never reprices days that are already recorded. |
 
 **Reconfigure** changes the email or password for the same account.
@@ -136,7 +136,7 @@ automation:
 - Daily values are each bill spread evenly over its days, not measured daily use.
 - Costs are worked out from Watercare's published residential prices, so they leave out infrastructure growth charges, trade waste, late fees and credits. **Last bill amount** shows what Watercare actually billed. Business accounts are not supported.
 - Bills that start before 1 July 2018 are priced at the 2018/19 prices, the earliest the integration has.
-- One Watercare account per Home Assistant instance.
+- One Watercare property per Home Assistant instance. If your login has several, the integration uses the first one Watercare returns when you add it (its meter is on the Meter number sensor) and stays with it; you can't choose another.
 
 ## Troubleshooting
 

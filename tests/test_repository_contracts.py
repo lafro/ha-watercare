@@ -113,7 +113,7 @@ def test_hacs_requires_a_minimum_home_assistant() -> None:
 def test_fixtures_use_only_synthetic_identifiers() -> None:
     # Watercare account numbers look like seven digits, a dash and two
     # digits. Only the synthetic ones may appear anywhere in the repository.
-    allowed = {"1000001-01", "2000002-02"}
+    allowed = {"1000001-01", "2000002-02", "3000003-03"}
     pattern = re.compile(r"\b\d{7}-\d{2}\b")
     for path in _text_files():
         found = set(pattern.findall(path.read_text(errors="ignore"))) - allowed

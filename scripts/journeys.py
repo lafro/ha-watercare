@@ -113,8 +113,6 @@ NEW_PASSWORD = "synthetic-journey-password-2"  # noqa: S105 - synthetic
 WRONG_PASSWORD = "not-the-synthetic-password"  # noqa: S105 - synthetic
 # What the options journey enters: a ratio and prices no year has.
 NEW_RATIO = Decimal("0.95")
-# What the setup form gets where a journey enters a ratio of its own.
-SETUP_RATIO = Decimal("0.9")
 # A sign-in from a form: the B2C steps, then the account it reaches.
 SIGN_IN = ["authorize", "self_asserted", "confirmed", "token", "account"]
 # Values are compared to the expected ones within this (litres or NZD).
@@ -882,29 +880,21 @@ class Journey:
         if result.get("type") == "create_entry":
             self.entries.append(str(result["result"]["entry_id"]))
 
-    def set_up(
-        self, email: str, password: str, ratio: Decimal | None = None
-    ) -> tuple[dict[str, Any], datetime]:
-        """Sign in from Add integration; return the step after it and when.
-
-        With ``ratio``, the form's wastewater ratio is changed to it.
-        """
+    def set_up(self, email: str, password: str) -> tuple[dict[str, Any], datetime]:
+        """Sign in from Add integration; return the step after it and when."""
         first = self.start_flow({})
         self.require(
             "the setup starts at the sign-in form", first.get("step_id") == "user"
         )
-        data: dict[str, Any] = {"username": email, "password": password}
-        if ratio is not None:
-            data["wastewater_ratio"] = float(ratio)
         started = datetime.now(UTC)
-        after = self.submit(str(first["flow_id"]), data)
+        after = self.submit(
+            str(first["flow_id"]), {"username": email, "password": password}
+        )
         return after, started
 
-    def new_entry(
-        self, email: str = EMAIL, ratio: Decimal | None = None
-    ) -> tuple[str, Import]:
+    def new_entry(self, email: str = EMAIL) -> tuple[str, Import]:
         """Add the integration, wait for its first statistics update, return it."""
-        done, _started = self.set_up(email, self.current.password, ratio)
+        done, _started = self.set_up(email, self.current.password)
         self.require(
             "the entry is created",
             done.get("type") == "create_entry",
@@ -913,7 +903,7 @@ class Journey:
         entry_id = self.entries[-1]
         issued = self.issued()
         self.wait_imported(entry_id, first=True)
-        return entry_id, Import(issued, Pricing(ratio or DEFAULT_RATIO))
+        return entry_id, Import(issued, Pricing(DEFAULT_RATIO))
 
     def remove(self, entry_id: str) -> None:
         """Remove the entry, as its Delete menu item does."""
@@ -1301,10 +1291,10 @@ def _sign_in_statuses(records: Iterable[dict[str, Any]]) -> list[str]:
 
 
 def first_setup(j: Journey) -> None:
-    """First setup: email, password and ratio, the entry, the history imported."""
+    """First setup: email and password, the entry, the history imported."""
     j.scenario(j.watercare())
     mark = j.log_mark()
-    done, started = j.set_up(EMAIL, PASSWORD, SETUP_RATIO)
+    done, started = j.set_up(EMAIL, PASSWORD)
     j.require(
         "the entry is created",
         done.get("type") == "create_entry",
@@ -1352,11 +1342,11 @@ def first_setup(j: Journey) -> None:
     )
     stored = j.diagnostics(entry_id)["config_entry"]
     j.check(
-        "the entry keeps the ratio entered at setup",
-        stored.get("wastewater_ratio") == float(SETUP_RATIO),
+        "the entry has Watercare's standard wastewater ratio",
+        stored.get("wastewater_ratio") == float(DEFAULT_RATIO),
         f"ratio {stored.get('wastewater_ratio')}",
     )
-    j.check_entry(entry_id, [Import(issued, Pricing(SETUP_RATIO))])
+    j.check_entry(entry_id, [Import(issued, Pricing(DEFAULT_RATIO))])
     j.check_quiet("from the setup to the first import", mark)
 
 
@@ -1385,12 +1375,12 @@ def add_again(j: Journey) -> None:
     j.check_unchanged("Watercare was added again", before, after)
     j.check_quiet("added again over the kept statistics", mark)
 
-    # The statistics deleted, as the README says for starting again: the
-    # next setup imports every bill, at the ratio it is given.
+    # The statistics deleted, as the README says for switching accounts: the
+    # next setup imports every bill.
     j.remove(again_id)
     j.clear_statistics()
     mark = j.log_mark()
-    fresh_id, fresh = j.new_entry(ratio=SETUP_RATIO)
+    fresh_id, fresh = j.new_entry()
     days = sum(bill.days for bill in fresh.bills)
     last = j.diagnostics(fresh_id)["coordinator"].get("last_import") or {}
     j.check(
@@ -1609,7 +1599,7 @@ def reconfigure(j: Journey) -> None:
 
 
 def options(j: Journey) -> None:
-    """Options: a new wastewater ratio and this year's prices."""
+    """Options: a new wastewater ratio and this year's prices, then start again."""
     j.scenario(j.watercare(withheld=1))
     entry_id, first = j.new_entry()
     before = j.check_entry(entry_id, [first])
@@ -1676,6 +1666,16 @@ def options(j: Journey) -> None:
         f"(expected {'none' if want is None else f'{want:.2f}'}); "
         f"{coordinator.get('last_import')}",
     )
+
+    # Starting again (docs/statistics.md): the statistics deleted and the
+    # entry reloaded, every bill is imported at the new options.
+    j.clear_statistics()
+    mark = j.log_mark()
+    j.reload(entry_id)
+    days = sum(bill.days for bill in issued)
+    j.wait_imported(entry_id, days)
+    j.check_entry(entry_id, [Import(issued, pricing)])
+    j.check_quiet("started again", mark)
 
 
 def restart(j: Journey, relaunch: Callable[[], None]) -> None:
