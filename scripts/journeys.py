@@ -130,10 +130,11 @@ SHOWN_PROBLEMS = 5
 # The stand-in's folder, in the instance's configuration folder.
 STANDIN_FOLDER = "journeys"
 # Home Assistant's log, in the instance's configuration folder, and its lines:
-# "<date> <time>.<ms> <LEVEL> (<thread>) [<logger>] <message>".
+# "<date> <time>.<ms> <LEVEL> (<thread>) [<logger>] <message>". From 2026.11
+# the time ends with the UTC offset, as in "12:00:00.123+13:00".
 LOG_FILE = "home-assistant.log"
 LOG_LINE = re.compile(
-    r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{3} (?P<level>[A-Z]+) "
+    r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{3}(?:[+-]\d\d:\d\d)? (?P<level>[A-Z]+) "
     r"\(.*?\) \[(?P<name>[^\]]+)\] (?P<message>.*)$"
 )
 _FAKES = ("watercare_http.py",)
