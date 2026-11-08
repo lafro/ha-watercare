@@ -1716,13 +1716,13 @@ def restart(j: Journey, relaunch: Callable[[], None]) -> None:
 
 
 JOURNEYS: dict[str, str] = {
-    "first_setup": "First setup: email, password and ratio, history imported",
+    "first_setup": "First setup: email and password, history imported",
     "add_again": "Remove and add again: history continues; deleted, comes back whole",
     "wrong_password": "Wrong password, then the right one",
     "watercare_down": "Watercare down for maintenance, then down, at setup; then back",
     "reauth": "Watercare no longer takes the stored login: sign in again",
     "reconfigure": "Reconfigure: new email, same account; another account refused",
-    "options": "Options: wastewater ratio and this year's prices",
+    "options": "Options: wastewater ratio and this year's prices, then start again",
     "restart": "Restart and reload, history unbroken",
 }
 

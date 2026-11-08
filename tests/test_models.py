@@ -416,9 +416,8 @@ def test_account_summary_matches_a_numeric_account_number() -> None:
     "payload",
     [
         properties_payload(SECOND_ACCOUNT_NUMBER, THIRD_ACCOUNT_NUMBER),
-        # Records with no usable account number never match.
-        ["not a dict", {"accountNumber": None}],
-        [{"accountNumber": True}, {"accountNumber": ""}],
+        # A record with no usable account number never matches.
+        [{"accountNumber": None}, *properties_payload(SECOND_ACCOUNT_NUMBER)],
     ],
 )
 def test_account_summary_refuses_a_login_without_its_property(
@@ -428,6 +427,21 @@ def test_account_summary_refuses_a_login_without_its_property(
         AccountSummary.from_json(payload, ACCOUNT_NUMBER)
     with pytest.raises(WatercarePropertyNotListedError):
         AccountSummary.from_json(payload, "True")
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        ["not a dict", {"accountNumber": None}],
+        [{"accountNumber": True}, {"accountNumber": ""}],
+    ],
+)
+def test_account_summary_of_several_records_without_numbers_is_unreadable(
+    payload: list[object],
+) -> None:
+    # An answer that names no property is unreadable, as a one-record answer
+    # without a number is, not a login that lacks the entry's property.
+    assert AccountSummary.from_json(payload, ACCOUNT_NUMBER) is None
 
 
 # A transaction's date is a UTC timestamp. Whether it is Auckland midnight of

@@ -931,6 +931,8 @@ class _Login:
 
     def __init__(self, *listed: str) -> None:
         self.listed = list(listed)
+        # Records to list instead of the properties, when set.
+        self.records: list[Any] | None = None
         self.requests: list[str] = []
         self.periods: dict[str, Any] = {
             ACCOUNT_NUMBER: default_periods(),
@@ -953,6 +955,8 @@ class _Login:
         del api
         self.requests.append(path)
         if path == "v1/account":
+            if self.records is not None:
+                return self.records
             return properties_payload(*self.listed)
         _, kind, number, _ = path.split("/")
         return self.periods[number] if kind == "usage" else self.transactions[number]
@@ -1025,6 +1029,26 @@ async def test_a_login_without_the_entrys_property_retries_setup(
     assert str(entry.reason) == PROPERTY_NOT_LISTED_MESSAGE
     assert login.numbers_asked() == set()
     assert _warnings(caplog) == []
+
+
+async def test_several_records_without_numbers_are_an_unreadable_answer(
+    ha: HomeAssistant, login: _Login
+) -> None:
+    """Records that name no property retry as a connection problem.
+
+    As one record without a number does: the login has not been shown to
+    lack the entry's property.
+    """
+    login.records = [{"accountNumber": None}, {"accountNumber": ""}]
+    entry = make_entry()
+    await _setup(ha, entry)
+
+    assert entry.state is ConfigEntryState.SETUP_RETRY
+    assert entry.error_reason_translation_key == "cannot_connect"
+    assert str(entry.reason) == (
+        "Could not get data from Watercare (its answer had no account)"
+    )
+    assert login.numbers_asked() == set()
 
 
 async def test_a_running_entry_whose_property_is_no_longer_listed_goes_unavailable(

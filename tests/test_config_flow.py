@@ -557,3 +557,39 @@ async def test_reauth_and_reconfigure_refuse_a_login_without_the_property(
     assert result["reason"] == "wrong_account"
     assert entry.data[CONF_USERNAME] == EMAIL
     assert entry.data[CONF_PASSWORD] == PASSWORD
+
+
+async def test_reauth_and_reconfigure_read_records_without_numbers_as_unreadable(
+    ha: HomeAssistant, mock_setup: AsyncMock
+) -> None:
+    """Several records that name no property are an unreadable answer.
+
+    Not ``wrong_account``, whose text says to remove Watercare: the login
+    has not been shown to lack the entry's property.
+    """
+    entry = make_entry()
+    entry.add_to_hass(ha)
+    unnumbered = [{"accountNumber": None}, {"accountNumber": ""}]
+
+    with (
+        patch.object(WatercareApi, "async_sign_in", autospec=True),
+        patch.object(
+            WatercareApi, "_async_get", autospec=True, return_value=unnumbered
+        ),
+    ):
+        result = await entry.start_reauth_flow(ha)
+        result = await ha.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_PASSWORD: "changed-password"}
+        )
+        assert result["type"] is FlowResultType.FORM
+        assert result["errors"] == {"base": "cannot_connect"}
+
+        result = await entry.start_reconfigure_flow(ha)
+        result = await ha.config_entries.flow.async_configure(
+            result["flow_id"],
+            {CONF_USERNAME: "new@example.com", CONF_PASSWORD: "new-password"},
+        )
+        assert result["type"] is FlowResultType.FORM
+        assert result["errors"] == {"base": "cannot_connect"}
+    assert entry.data[CONF_USERNAME] == EMAIL
+    assert entry.data[CONF_PASSWORD] == PASSWORD

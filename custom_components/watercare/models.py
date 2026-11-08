@@ -283,21 +283,24 @@ class AccountSummary:
 
         A login whose list holds several records (one per property, it is
         thought; never seen) gives the one with ``account_number``, and
-        raises ``WatercarePropertyNotListedError`` if none has it. Otherwise
-        the first record is used, whatever its number: that is the one setup
-        takes, and on a one-property login a change in how the number is
-        written can then never stop a working install.
+        raises ``WatercarePropertyNotListedError`` if others are numbered but
+        none has it. Records with no usable number make the answer
+        unreadable (None), as a single one does. Otherwise the first record
+        is used, whatever its number: that is the one setup takes, and on a
+        one-property login a change in how the number is written can then
+        never stop a working install.
         """
         if not isinstance(payload, list) or not payload:
             return None
         record = payload[0]
         if account_number is not None and len(payload) > 1:
-            record = next(
-                (item for item in payload if _account_number(item) == account_number),
-                None,
-            )
-            if record is None:
+            numbers = [_account_number(item) for item in payload]
+            if account_number in numbers:
+                record = payload[numbers.index(account_number)]
+            elif any(numbers):
                 raise WatercarePropertyNotListedError
+            else:
+                return None
         number = _account_number(record)
         if number is None:
             return None

@@ -136,7 +136,7 @@ automation:
 - Daily values are each bill spread evenly over its days, not measured daily use.
 - Costs are worked out from Watercare's published residential prices, so they leave out infrastructure growth charges, trade waste, late fees and credits. **Last bill amount** shows what Watercare actually billed. Business accounts are not supported.
 - Bills that start before 1 July 2018 are priced at the 2018/19 prices, the earliest the integration has.
-- One Watercare property per Home Assistant instance. If your login has several, the integration uses the first one Watercare returns when you add it (its meter is on the Meter number sensor) and stays with it; you can't choose another.
+- One Watercare property per Home Assistant instance. If your login has several, the integration uses the first one Watercare returns when you add it (its meter is on the Meter number sensor) and stays with it while Watercare lists it; you can't choose another.
 
 ## Troubleshooting
 
