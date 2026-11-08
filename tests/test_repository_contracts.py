@@ -363,7 +363,11 @@ def test_check_versions_reads_a_beta_from_its_release_section(tmp_path: Path) ->
     check_versions.main(["v9.8.7b2", "--release-notes", str(notes)], tmp_path)
 
     text = notes.read_text()
-    assert text.startswith("Beta of 9.8.7 for testing.")
+    assert text.startswith(
+        "Beta of 9.8.7 for testing. The Marketplace (or HACS before Home Assistant "
+        "2026.11) offers it only to installations that include pre-releases for "
+        "this repository.\n\n### Fixed"
+    )
     assert text.endswith("### Fixed\n\n- New.\n")
     with pytest.raises(SystemExit, match="Tag mismatch"):
         check_versions.main(["v9.8.7"], tmp_path)
