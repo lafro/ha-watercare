@@ -17,20 +17,20 @@ Based on the MIT-licensed [brunsy/ha-watercare](https://github.com/brunsy/ha-wat
 
 ## Requirements
 
-- Home Assistant 2026.10.0 or newer. On 2026.11 or newer you also need a GitHub account, because Watercare isn't in the Marketplace catalog.
+- Home Assistant 2026.10.0 or newer, and a GitHub account (HACS needs one, and so does the Marketplace for a repository outside its catalog).
 - A Watercare account with a mechanical (manually read) water meter. Smart meters are not supported; see [Known limitations](#known-limitations).
 
 ## Installation
 
 1. Install Watercare, or use the button above:
-   - **Home Assistant 2026.11 or newer:** go to **Settings → Marketplace → Add from link**, enter `https://github.com/lafro/ha-watercare` and select **Add**, connecting GitHub when asked. Then open **Watercare** and select **Install**. No restart is normally needed.
+   - **Home Assistant 2026.11 or newer:** go to **Settings → Marketplace → Add from link**, enter `https://github.com/lafro/ha-watercare` and select **Add**, connecting GitHub when asked. Then open **Watercare** and select **Install**; setup then opens by itself, normally with no restart.
    - **Home Assistant 2026.10:** in HACS, open the menu (⋮), choose **Custom repositories**, add `https://github.com/lafro/ha-watercare` with type **Integration**, download **Watercare**, and restart Home Assistant.
-2. Go to **Settings → Devices & services → Add integration → Watercare**.
+2. On 2026.10, or if setup didn't open, go to **Settings → Devices & services → Add integration → Watercare**.
 3. Sign in with the email address and password you use for the Watercare app or My Account. Home Assistant keeps the sign-in, with a renewable token, and sends it only to Watercare.
 
 The first update imports every bill Watercare still lists. Upgrading from 1.4.x? Install 1.5.1 first (in the Marketplace: **Watercare → ⋮ → Install another version**), then this version.
 
-Beta versions are GitHub pre-releases, offered only if you opt in: in the Marketplace, **Watercare → ⋮ → Include pre-releases**; in HACS on 2026.10, turn on beta versions for Watercare.
+Beta versions are GitHub pre-releases, offered only if you opt in: in the Marketplace, **Watercare → ⋮ → Include pre-releases**; in HACS on 2026.10, enable and turn on the **Pre-release** switch on Watercare's device under **Settings → Devices & services → HACS**.
 
 ## Options
 
@@ -154,7 +154,7 @@ automation:
 
 1. Remove the Watercare sources from **Settings → Dashboards → Energy**.
 2. Delete **Watercare** under **Settings → Devices & services**.
-3. Uninstall it in the Marketplace (**Watercare → ⋮ → Uninstall**), or remove it in HACS on 2026.10. Then restart Home Assistant.
+3. On 2026.11, choose **Uninstall** when asked (or **Watercare → ⋮ → Uninstall** in the Marketplace); on 2026.10, remove it in HACS. Then restart Home Assistant.
 
 The statistics stay in the database. Delete them under **Settings → Tools → Statistics** if you no longer want the history.
 
