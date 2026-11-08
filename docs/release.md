@@ -8,7 +8,7 @@ HACS offers an update only when the version string changes, so every shippable c
 4. A release that changes sign-in, setup or the first import is first tried as a new installation, with the live test in [CONTRIBUTING](../CONTRIBUTING.md#live-test) (`--ref` with the merge commit).
 5. Run the **Release** workflow from `main` with the tag `vX.Y.Z`, or `vX.Y.ZbN` for a [beta](#beta-pre-releases) (Actions → Release → Run workflow). After the gates pass, the publishing job waits in the `release` environment until the maintainer approves it (the run's **Review deployments** button). It re-runs every gate from a clean install, checks that the manifest's links name the repository it runs in, creates the tag on the exact commit that passed, checks it, then publishes the release with that version's CHANGELOG section as its notes, and nothing else (HACS shows them in the update dialog). It never edits files.
 6. Tags matching `v*` cannot be moved or deleted (tag ruleset), and releases are immutable. A defect found after release is fixed with a new patch version, never by replacing a release.
-7. Install the release through HACS on a test or production instance and check it.
+7. Install the release through the Marketplace (or HACS on 2026.10) on a test or production instance and check it.
 
 ## Beta pre-releases
 
@@ -16,7 +16,7 @@ A release with changes that are risky to verify only against the stand-in ships 
 
 1. In the pull request, set the version to `X.Y.ZbN` (for example `1.6.0b1`) in `manifest.json` and `pyproject.toml`, and run `uv lock`. The CHANGELOG keeps the `## X.Y.Z` section of the release the beta previews: what changed since the last stable release, in a few user-facing lines, with at most one line for people upgrading. Each beta rewrites that section rather than adding to it. `check_versions.py` reads a beta's notes from it and starts them with a line saying it is a beta.
 2. Run the journeys, merge, and try a beta that changes sign-in, setup or the first import as a new installation with the live test, as for any release (steps 2 to 4 above).
-3. Run the **Release** workflow with the tag `vX.Y.ZbN`. It publishes a GitHub pre-release, not marked latest. HACS offers it only to installations that turn on beta versions for this repository, or that download that version by name.
+3. Run the **Release** workflow with the tag `vX.Y.ZbN`. It publishes a GitHub pre-release, not marked latest. The Marketplace (or HACS on 2026.10) offers it only to installations that include pre-releases for this repository, or that install that version by name.
 4. A defect found in a beta is fixed in a pull request for `X.Y.ZbN+1`, never by replacing the beta, skipping a number or renaming the version. New features wait for a later minor release.
 5. Once a beta is verified on a real installation, a pull request sets the version to `X.Y.Z` with no code change, and the stable release follows as above.
 

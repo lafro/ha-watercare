@@ -2,7 +2,7 @@
 
 An unofficial Home Assistant integration for Watercare (Auckland) water accounts. It signs in with your Watercare login, reads your completed bills, and records daily water use and cost for Home Assistant's Energy dashboard.
 
-[![Open your Home Assistant instance and open this repository in HACS.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=lafro&repository=ha-watercare&category=integration)
+[![Open your Home Assistant instance and open this repository in the Marketplace, or in HACS before Home Assistant 2026.11.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=lafro&repository=ha-watercare&category=integration)
 
 > [!IMPORTANT]
 > This project is not affiliated with, endorsed by or supported by Watercare Services Limited. It uses the endpoints of Watercare's customer app, which may change without notice.
@@ -17,17 +17,20 @@ Based on the MIT-licensed [brunsy/ha-watercare](https://github.com/brunsy/ha-wat
 
 ## Requirements
 
-- Home Assistant 2026.10.0 or newer.
+- Home Assistant 2026.10.0 or newer, and a GitHub account (HACS needs one, and so does the Marketplace for a repository outside its catalog).
 - A Watercare account with a mechanical (manually read) water meter. Smart meters are not supported; see [Known limitations](#known-limitations).
 
 ## Installation
 
-1. In HACS, open the menu (⋮), choose **Custom repositories**, add `https://github.com/lafro/ha-watercare` with type **Integration**, then download **Watercare**. Or use the button above.
-2. Restart Home Assistant.
-3. Go to **Settings → Devices & services → Add integration → Watercare**.
-4. Sign in with the email address and password you use for the Watercare app or My Account. Home Assistant keeps the sign-in, with a renewable token, and sends it only to Watercare.
+1. Install Watercare, or use the button above:
+   - **Home Assistant 2026.11 or newer:** go to **Settings → Marketplace → Add from link**, enter `https://github.com/lafro/ha-watercare` and select **Add**, connecting GitHub when asked. Then open **Watercare** and select **Install**; setup opens by itself, normally with no restart.
+   - **Home Assistant 2026.10:** in HACS, open the menu (⋮), choose **Custom repositories**, add `https://github.com/lafro/ha-watercare` with type **Integration**, download **Watercare**, and restart Home Assistant.
+2. On 2026.10, or if setup didn't open, go to **Settings → Devices & services → Add integration → Watercare**.
+3. Sign in with the email address and password you use for the Watercare app or My Account. Home Assistant keeps the sign-in, with a renewable token, and sends it only to Watercare.
 
-The first update imports every bill Watercare still lists. Upgrading from 1.4.x? Install 1.5.1 first, then this version.
+The first update imports every bill Watercare still lists. Upgrading from 1.4.x? Install 1.5.1 first (in the Marketplace: **Watercare → ⋮ → Install another version**), then this version.
+
+Beta versions are GitHub pre-releases, offered only if you opt in: in the Marketplace, **Watercare → ⋮ → Include pre-releases**; in HACS on 2026.10, enable and turn on the **Pre-release** switch on Watercare's device under **Settings → Devices & services → HACS**.
 
 ## Options
 
@@ -142,7 +145,7 @@ automation:
 
 - **Setup says Watercare is down for maintenance:** try again later. After setup, the log says so, the sensors show as unavailable, and the next update, within 12 hours, tries again.
 - **Setup says it cannot connect:** Watercare did not answer, answered with an error, or its sign-in page was unavailable. Try again later.
-- **"Watercare asks for a newer version" repair notice:** Watercare's service has probably changed. Check HACS for an update to Watercare, and open an issue if there is none. The notice goes away by itself once Watercare answers normally again.
+- **"Watercare asks for a newer version" repair notice:** Watercare's service has probably changed. Check the Marketplace (or HACS on 2026.10) for an update to Watercare, and open an issue if there is none. The notice goes away by itself once Watercare answers normally again.
 - **Re-authentication requested:** Watercare rejected the stored password. Enter the current one. If you changed your Watercare email, use **Reconfigure** instead.
 - **Costs stopped after 1 July:** the integration does not have the new year's prices yet. Fix the repair notice or update the integration.
 - **Reporting a problem:** in the integration's ⋮ menu, **Enable debug logging**, reproduce the problem, then **Disable debug logging** to download the log. Download diagnostics from the same menu. Both leave out credentials, account and meter numbers, usage and amounts, but check them before sharing.
@@ -151,7 +154,7 @@ automation:
 
 1. Remove the Watercare sources from **Settings → Dashboards → Energy**.
 2. Delete **Watercare** under **Settings → Devices & services**.
-3. Remove it in HACS and restart Home Assistant.
+3. On 2026.11, choose **Uninstall** when asked (or **Watercare → ⋮ → Uninstall** in the Marketplace); on 2026.10, remove it in HACS. Then restart Home Assistant.
 
 The statistics stay in the database. Delete them under **Settings → Tools → Statistics** if you no longer want the history.
 
