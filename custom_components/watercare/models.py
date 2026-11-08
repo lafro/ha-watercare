@@ -11,7 +11,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 from .const import NZ_TIMEZONE
 
@@ -115,45 +115,121 @@ class BillingPeriod:
         )
 
 
+type RefusalReason = Literal["no_usage", "overlaps_previous", "overlaps_stored"]
+"""Why the smart-meter guard refused a billing period."""
+
+
+@dataclass(frozen=True, slots=True)
+class RefusedPeriod:
+    """A billing period left out because Watercare reports a smart meter."""
+
+    period: BillingPeriod
+    reason: RefusalReason
+
+
 @dataclass(frozen=True, slots=True)
 class ParsedPeriods:
     """Billing periods parsed from one response."""
 
     periods: tuple[BillingPeriod, ...]
-    skipped: int
+    unfinished: int
+    """Periods that end today or later, or have a placeholder date."""
+    unreadable: int
+    """Periods that could not be read at all."""
     duplicates: int
+    refused: tuple[RefusedPeriod, ...] = ()
+    """Periods the smart-meter guard left out."""
 
 
-def parse_billing_periods(payload: Any, *, today: date | None = None) -> ParsedPeriods:
+def parse_billing_periods(
+    payload: Any, *, today: date | None = None, smart_meter: bool = False
+) -> ParsedPeriods:
     """Parse the mechanicalmonthly response.
 
     Duplicate periods (same start and end) are kept once, so a repeated item
     can never be counted twice. With ``today`` (an Auckland date), a period
-    that ends on or after it is skipped. The endpoint only returns completed
+    that ends on or after it is left out. The endpoint only returns completed
     periods, so a later end is a placeholder or an unfinished period, whose
     usage would be spread over days that have not happened. An unfinished
     period would end today, and once stored its partial usage would stay in
     the history, which only appends; a period read today loads tomorrow.
+
+    With ``smart_meter``, Watercare reports a smart meter, whose periods have
+    never been seen. A period with no usage figure is refused rather than
+    read as no water, and so is one that starts before the end of the period
+    before it, rather than moved after it with its whole volume, which would
+    count the shared days twice. A start on that end day is allowed.
     """
     if not isinstance(payload, list):
         raise WatercarePayloadError("Billing periods payload is not a list")
     seen: set[tuple[date, date]] = set()
     periods: list[BillingPeriod] = []
-    skipped = 0
+    unfinished = 0
+    unreadable = 0
     duplicates = 0
+    refused: list[RefusedPeriod] = []
     for item in payload:
         period = BillingPeriod.from_json(item)
-        if period is None or (today is not None and period.end >= today):
-            skipped += 1
+        if period is None:
+            if _has_placeholder_date(item):
+                unfinished += 1
+            else:
+                unreadable += 1
+            continue
+        if today is not None and period.end >= today:
+            unfinished += 1
             continue
         key = (period.start, period.end)
         if key in seen:
             duplicates += 1
             continue
         seen.add(key)
+        if smart_meter and item.get("waterUsage") is None:
+            refused.append(RefusedPeriod(period, "no_usage"))
+            continue
         periods.append(period)
     periods.sort(key=lambda period: (period.end, period.start))
-    return ParsedPeriods(tuple(periods), skipped, duplicates)
+    if smart_meter:
+        periods = _refuse_overlaps(periods, refused)
+    return ParsedPeriods(
+        tuple(periods), unfinished, unreadable, duplicates, tuple(refused)
+    )
+
+
+def _refuse_overlaps(
+    periods: list[BillingPeriod], refused: list[RefusedPeriod]
+) -> list[BillingPeriod]:
+    """Keep the periods that start on or after the end of the one before."""
+    kept: list[BillingPeriod] = []
+    for period in periods:
+        if kept and period.start < kept[-1].end:
+            refused.append(RefusedPeriod(period, "overlaps_previous"))
+            continue
+        kept.append(period)
+    return kept
+
+
+def _has_placeholder_date(item: Any) -> bool:
+    """Whether a period has a date with no Auckland date, such as year 9999."""
+    if not isinstance(item, dict):
+        return False
+    for key in ("billingPeriodFromDate", "billingPeriodToDate"):
+        value = item.get(key)
+        if not isinstance(value, str):
+            continue
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            continue
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        try:
+            local_date(parsed.astimezone(UTC))
+        except OverflowError:
+            # "0001-01-01T00:00:00+13:00" has no UTC instant, and
+            # "9999-12-31T23:59:59Z" no Auckland date.
+            return True
+    return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,7 +296,8 @@ class AccountSummary:
                 if record.get("hasDueDate")
                 else None
             ),
-            meter_type=_optional_str(record.get("meterType")),
+            # A blank or padded type says nothing more than a missing one.
+            meter_type=_optional_str(record.get("meterType"), strip=True),
             meter_number=meter_number,
             meter_changed_to_smart=changed_to_smart,
         )
@@ -296,10 +373,13 @@ def _mapping(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def _optional_str(value: Any) -> str | None:
+def _optional_str(value: Any, *, strip: bool = False) -> str | None:
     if value is None:
         return None
-    return str(value)
+    text = str(value)
+    if strip:
+        return text.strip() or None
+    return text
 
 
 def _optional_number(value: Any) -> float | None:

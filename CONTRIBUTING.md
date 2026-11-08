@@ -38,7 +38,7 @@ uv run python scripts/live_ha.py stop                  # remove it all
 The journeys run the integration end to end in a real Home Assistant against a stand-in Watercare, with no real sign-in:
 
 ```bash
-uv run python scripts/journeys.py                       # the working tree, all seven
+uv run python scripts/journeys.py                       # the working tree, all eight
 uv run python scripts/journeys.py --ref v1.5.1          # or a release tag or commit
 uv run python scripts/journeys.py --only reauth options # some of them
 uv run python scripts/journeys.py --clean-up            # delete a left-over instance
@@ -48,7 +48,8 @@ It builds a disposable Home Assistant as the live test does (the newest release,
 
 | Journey | What it does |
 | --- | --- |
-| `first_setup` | Email and password, entry; the setup signs in once, and the entry's first update uses the refresh token; every bill imported as daily rows |
+| `first_setup` | Email, password and a wastewater ratio, entry; the setup signs in once, and the entry's first update uses the refresh token; every bill imported as daily rows at that ratio; the integration logs nothing above debug level |
+| `add_again` | Remove Watercare, which keeps its statistics, and add it again after a new bill: only that bill's days are added; then remove it, delete the statistics and add it again: every bill is imported; nothing above debug level either time |
 | `wrong_password` | Watercare rejects the password (`invalid_auth`) and the form keeps the email; the right one creates the entry |
 | `watercare_down` | Watercare says it is down for maintenance (`service_maintenance`), then answers 503 (`cannot_connect`); the same form works once it is back |
 | `reauth` | The password changes at Watercare, ending every sign-in; the next update asks to sign in again; the new password, and the reloaded entry uses its refresh token; history unbroken |
@@ -63,7 +64,7 @@ Run the journeys before every release, and in every pull request that changes si
 ## Pull requests
 
 - Add tests for every behaviour change; every integration module needs at least 95% line and branch coverage.
-- Preserve the config-entry migration, re-authentication and statistics continuity paths.
+- Preserve re-authentication and statistics continuity: never delete or rewrite stored statistics.
 - Treat API responses as untrusted input.
 - Never log request payloads, response bodies, headers or identifiers. Use `%`-style logging.
 - Update the README, CHANGELOG and `docs/` for user-visible changes.

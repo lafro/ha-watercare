@@ -141,5 +141,4 @@ jobs:
             --verify-tag \
             --title "$RELEASE_TAG" \
             --notes-file "$notes_file" \
-            --generate-notes \
             --fail-on-no-commits

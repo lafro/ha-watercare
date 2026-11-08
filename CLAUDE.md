@@ -7,7 +7,7 @@ Public HACS integration (`custom_components/watercare`, domain `watercare`). Rea
 - **Synthetic data only.** Never put a real Watercare account or meter number, email, name, address, token, balance, usage or cost figure, or the dates of a real bill, in code, tests, docs, commits, PRs or issues. Use the values in `tests/common.py`.
 - **No secrets.** CI runs a secret scan on every pull request; you can run the same locally with `gitleaks git -c .gitleaks.toml .` and `gitleaks dir -c .gitleaks.toml .`. The contract tests also reject account-number and meter-id shapes and non-example emails, but they cannot recognise a real usage figure.
 - **Pull requests only.** Never push to `main`, force-push, or create, move or delete tags or releases. Tags and releases are immutable by ruleset and come only from the Release workflow, which the maintainer runs (`docs/release.md`). Never release a CI-only or docs-only change, and never deploy by hand: users install a release through HACS.
-- **Statistics continuity matters more than tidiness.** Statistic ids, entity unique ids and the config-entry migration path must keep existing installations working. Never rewrite stored statistics except through the documented one-off rebuild, and never run SQL against the recorder.
+- **Statistics continuity matters more than tidiness.** Statistic ids and entity unique ids must keep installations from 1.5.x on working. The integration never deletes or rewrites stored statistics: it only adds days after the newest stored one, and a statistic with no stored rows is imported in full. Config entries older than version 1.2 (1.4.x and earlier) are refused with a clear message, not migrated. Never run SQL against the recorder.
 - **Prices** change every 1 July. Add new years to `tariffs.py` with a cited source in `docs/tariffs.md`.
 
 ## Working
@@ -27,7 +27,7 @@ Public HACS integration (`custom_components/watercare`, domain `watercare`). Rea
 ## Facts that are easy to get wrong
 
 - Watercare's mobile API only returns completed billing periods; dates are Auckland midnight in UTC; usage is in litres, in whole kilolitres for mechanical meters.
-- Watercare charges a whole bill at the prices in force when its billing period **starts** (`statistics.pricing_date`), so a bill spanning 1 July keeps the earlier year's prices. Several real bills, including ones spanning 1 July in different years, match the integration's pricing to the cent; see `docs/tariffs.md`.
+- Watercare charges a whole bill at the prices in force when its billing period **starts** (`statistics.pricing_date`), so a bill spanning 1 July keeps the earlier year's prices. See `docs/tariffs.md`.
 - Sign-in is Azure AD B2C self-asserted (email and password); there is no password-grant policy. A missing `SETTINGS` object on the login page means maintenance, not bad credentials. Each sign-in gets its own session from `async_create_clientsession` (own cookie jar, `quote_cookie=False`), detached afterwards, never closed.
 - No API exposes prices. The Energy dashboard's water picker needs `unit_class="volume"`.
 - The usage and cost sensors deliberately have no state class; the external statistics feed the Energy dashboard.

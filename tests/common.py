@@ -13,15 +13,10 @@ import threading
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
-from decimal import Decimal
 from typing import Any
 
 from homeassistant.components.recorder import Recorder, get_instance
-from homeassistant.components.recorder.models import StatisticMeanType
-from homeassistant.components.recorder.statistics import (
-    async_add_external_statistics,
-    statistics_during_period,
-)
+from homeassistant.components.recorder.statistics import statistics_during_period
 from homeassistant.components.recorder.tasks import RecorderTask
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
@@ -31,18 +26,11 @@ from pytest_homeassistant_custom_component.components.recorder.common import (
 )
 
 from custom_components.watercare.const import (
-    ALL_STATISTIC_IDS,
     CONF_WASTEWATER_RATIO,
     DATA_STATISTICS_VERSION,
     DOMAIN,
-    STAT_CONSUMPTION,
-    STAT_CONSUMPTION_COST,
-    STAT_TOTAL_COST,
-    STAT_WASTEWATER_COST,
     STATISTICS_VERSION,
 )
-from custom_components.watercare.statistics import day_start
-from custom_components.watercare.tariffs import PUBLISHED_TARIFFS
 
 # The synthetic account, login and payload builders live with the fake
 # Watercare, which the journeys' stand-in also loads outside the harness.
@@ -98,12 +86,17 @@ def make_entry(
     version: int = 1,
     minor_version: int = 2,
     unique_id: str | None = ACCOUNT_NUMBER,
-    statistics_version: int | None = STATISTICS_VERSION,
 ) -> MockConfigEntry:
-    """Return a config entry for the synthetic account."""
-    entry_data: dict[str, Any] = {CONF_USERNAME: EMAIL, CONF_PASSWORD: PASSWORD}
-    if statistics_version is not None:
-        entry_data[DATA_STATISTICS_VERSION] = statistics_version
+    """Return a config entry for the synthetic account, as setup creates it.
+
+    Setup also stores a refresh token when Watercare gives one; without it,
+    the entry's first update signs in.
+    """
+    entry_data: dict[str, Any] = {
+        CONF_USERNAME: EMAIL,
+        CONF_PASSWORD: PASSWORD,
+        DATA_STATISTICS_VERSION: STATISTICS_VERSION,
+    }
     if data is not None:
         entry_data = data
     return MockConfigEntry(
@@ -116,57 +109,6 @@ def make_entry(
         data=entry_data,
         options=options if options is not None else {CONF_WASTEWATER_RATIO: 0.785},
     )
-
-
-def _legacy_metadata(statistic_id: str, name: str, unit: str) -> Any:
-    return {
-        "has_sum": True,
-        "mean_type": StatisticMeanType.NONE,
-        "name": name,
-        "source": DOMAIN,
-        "statistic_id": statistic_id,
-        "unit_class": "volume" if unit == "L" else None,
-        "unit_of_measurement": unit,
-    }
-
-
-async def add_legacy_statistics(hass: HomeAssistant) -> None:
-    """Store all four statistics the way 1.4.x did for the default bills.
-
-    One row per bill, at the Auckland midnight that starts its end date, every
-    bill priced at the one flat tariff from the 1.4.x options (2025/26).
-    """
-    flat = PUBLISHED_TARIFFS[2025]
-    ratio = Decimal("0.785")
-    bills = [(date(2026, 7, 3), 12, 31), (date(2026, 8, 3), 8, 31)]
-    bills.append((date(2026, 9, 2), 13, 30))
-    sums: dict[str, Decimal] = dict.fromkeys(ALL_STATISTIC_IDS, Decimal(0))
-    rows: dict[str, list[Any]] = {statistic_id: [] for statistic_id in sums}
-    for end, kilolitres, days in bills:
-        water = kilolitres * flat.water_rate
-        wastewater = kilolitres * ratio * flat.wastewater_rate
-        fixed = flat.fixed_charge / 365 * days
-        for statistic_id, amount in (
-            (STAT_CONSUMPTION, Decimal(kilolitres * 1000)),
-            (STAT_TOTAL_COST, water + wastewater + fixed),
-            (STAT_CONSUMPTION_COST, water),
-            (STAT_WASTEWATER_COST, wastewater),
-        ):
-            sums[statistic_id] += amount
-            rows[statistic_id].append(
-                {"start": day_start(end), "sum": float(sums[statistic_id])}
-            )
-    names = {
-        STAT_CONSUMPTION: ("Watercare Water Consumption", "L"),
-        STAT_TOTAL_COST: ("Watercare Total Cost", "NZD"),
-        STAT_CONSUMPTION_COST: ("Watercare Consumption Cost", "NZD"),
-        STAT_WASTEWATER_COST: ("Watercare Wastewater Cost", "NZD"),
-    }
-    for statistic_id, (name, unit) in names.items():
-        async_add_external_statistics(
-            hass, _legacy_metadata(statistic_id, name, unit), rows[statistic_id]
-        )
-    await async_wait_recording_done(hass)
 
 
 async def stored_rows(

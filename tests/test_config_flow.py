@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Generator
+from decimal import Decimal
+from logging import DEBUG, INFO
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from freezegun.api import FrozenDateTimeFactory
-from homeassistant.config_entries import SOURCE_USER
+from homeassistant.config_entries import SOURCE_USER, ConfigEntryState
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
@@ -24,10 +26,25 @@ from custom_components.watercare.config_flow import (
     async_validate_login,
     store_year_prices,
 )
-from custom_components.watercare.const import DOMAIN
-from custom_components.watercare.models import AccountSummary
+from custom_components.watercare.const import (
+    ALL_STATISTIC_IDS,
+    CONF_WASTEWATER_RATIO,
+    DOMAIN,
+    STAT_WASTEWATER_COST,
+)
+from custom_components.watercare.models import AccountSummary, parse_billing_periods
+from custom_components.watercare.statistics import bill_cost
+from custom_components.watercare.tariffs import TariffSchedule
 
-from .common import ACCOUNT_NUMBER, ACCOUNT_PAYLOAD, EMAIL, PASSWORD, make_entry
+from .common import (
+    ACCOUNT_NUMBER,
+    ACCOUNT_PAYLOAD,
+    EMAIL,
+    PASSWORD,
+    default_periods,
+    make_entry,
+    stored_rows,
+)
 
 ACCOUNT = AccountSummary.from_json(ACCOUNT_PAYLOAD)
 OTHER_ACCOUNT = AccountSummary.from_json([{"accountNumber": "2000002-02"}])
@@ -58,6 +75,7 @@ async def test_user_flow_creates_entry(
     )
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "user"
+    assert _defaults(result) == {CONF_WASTEWATER_RATIO: 0.785}
 
     result = await ha.config_entries.flow.async_configure(
         result["flow_id"], {CONF_USERNAME: EMAIL, CONF_PASSWORD: PASSWORD}
@@ -69,11 +87,76 @@ async def test_user_flow_creates_entry(
         CONF_USERNAME: EMAIL,
         CONF_PASSWORD: PASSWORD,
         "refresh_token": "new-refresh-token",
+        # So that going back to 1.5.1 continues the statistics.
+        "statistics_version": 2,
     }
     assert result["options"] == {"wastewater_ratio": 0.785}
     assert result["result"].unique_id == ACCOUNT_NUMBER
     assert result["result"].minor_version == 2
     mock_setup.assert_awaited_once()
+
+
+def _defaults(result: dict) -> dict[str, object]:
+    """Return the form's fields that have a default, with the default."""
+    return {
+        str(key): key.default()
+        for key in result["data_schema"].schema
+        if callable(getattr(key, "default", None))
+    }
+
+
+async def test_user_flow_takes_the_wastewater_ratio(
+    ha: HomeAssistant, mock_login: AsyncMock, mock_setup: AsyncMock
+) -> None:
+    result = await ha.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_USER}
+    )
+    result = await ha.config_entries.flow.async_configure(
+        result["flow_id"],
+        {CONF_USERNAME: EMAIL, CONF_PASSWORD: PASSWORD, CONF_WASTEWATER_RATIO: 0.95},
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["options"] == {"wastewater_ratio": 0.95}
+
+
+async def test_first_install_from_the_form(
+    ha: HomeAssistant,
+    mock_login: AsyncMock,
+    mock_api: dict[str, AsyncMock],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Add Watercare as a new user would: every bill, at the entered ratio."""
+    caplog.set_level(DEBUG, logger="custom_components.watercare")
+    result = await ha.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_USER}
+    )
+    result = await ha.config_entries.flow.async_configure(
+        result["flow_id"],
+        {CONF_USERNAME: EMAIL, CONF_PASSWORD: PASSWORD, CONF_WASTEWATER_RATIO: 0.95},
+    )
+    await ha.async_block_till_done(wait_background_tasks=True)
+
+    entry = result["result"]
+    assert entry.state is ConfigEntryState.LOADED
+    assert entry.runtime_data.statistics_status == "imported"
+    for statistic_id in ALL_STATISTIC_IDS:
+        assert len(await stored_rows(ha, statistic_id)) == 92, statistic_id
+    periods = parse_billing_periods(default_periods()).periods
+    costs = [bill_cost(p, TariffSchedule({}), Decimal("0.95")) for p in periods]
+    wastewater = sum(cost.wastewater for cost in costs if cost is not None)
+    rows = await stored_rows(ha, STAT_WASTEWATER_COST)
+    assert rows[-1]["sum"] == pytest.approx(float(wastewater))
+
+    own = [
+        r for r in caplog.records if r.name.startswith("custom_components.watercare")
+    ]
+    # A first install says nothing above DEBUG.
+    assert [r.getMessage() for r in own if r.levelno >= INFO] == []
+    assert "Importing the Watercare history: 92 days from 3 billing periods" in [
+        r.getMessage() for r in own if r.levelno == DEBUG
+    ]
+    mock_api["account"].assert_called()
 
 
 @pytest.mark.parametrize(
@@ -182,20 +265,6 @@ async def test_reauth_error_and_wrong_account(
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "wrong_account"
     assert entry.data[CONF_PASSWORD] == PASSWORD
-
-
-async def test_reauth_of_an_entry_without_unique_id(
-    ha: HomeAssistant, mock_login: AsyncMock, mock_setup: AsyncMock
-) -> None:
-    entry = make_entry(unique_id=None)
-    entry.add_to_hass(ha)
-    result = await entry.start_reauth_flow(ha)
-
-    result = await ha.config_entries.flow.async_configure(
-        result["flow_id"], {CONF_PASSWORD: "changed-password"}
-    )
-
-    assert result["reason"] == "reauth_successful"
 
 
 async def test_reconfigure_changes_the_login(
@@ -395,10 +464,10 @@ async def test_validate_login_signs_in_and_reads_the_account(ha: HomeAssistant) 
     assert token == "issued"
 
 
-async def test_reconfigure_without_unique_id_or_refresh_token(
+async def test_reconfigure_without_a_refresh_token(
     ha: HomeAssistant, mock_login: AsyncMock, mock_setup: AsyncMock
 ) -> None:
-    entry = make_entry(unique_id=None)
+    entry = make_entry()
     entry.add_to_hass(ha)
     mock_login.return_value = (ACCOUNT, None)
     result = await entry.start_reconfigure_flow(ha)

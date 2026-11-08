@@ -6,6 +6,7 @@ import json
 import re
 from pathlib import Path
 
+from custom_components.watercare import const
 from custom_components.watercare.sensor import SENSORS
 
 INTEGRATION = Path(__file__).parents[1] / "custom_components" / "watercare"
@@ -27,24 +28,55 @@ def test_every_sensor_has_a_name_and_an_icon() -> None:
     assert keys == set(names) == set(icons)
 
 
-def test_every_translation_key_used_in_code_exists() -> None:
+def _source() -> str:
+    return "\n".join(path.read_text() for path in INTEGRATION.glob("*.py"))
+
+
+def _translation_keys(source: str) -> set[str]:
+    """Return the translation keys the code passes, literal or constant."""
+    keys: set[str] = set()
+    pattern = r'translation_key=(\([^)]*\)|"[a-z_]+"|[A-Z_]+)'
+    for value in re.findall(pattern, source):
+        if value.isupper():
+            keys.add(getattr(const, value))
+        else:
+            keys.update(re.findall(r'"([a-z_]+)"', value))
+    return keys
+
+
+def test_every_translation_key_used_in_code_exists_and_is_used() -> None:
     strings = _strings()
-    source = "\n".join(path.read_text() for path in INTEGRATION.glob("*.py"))
-    for key in re.findall(r'translation_key="([a-z_]+)"', source):
-        known = (
-            set(strings["exceptions"])
-            | set(strings["issues"])
-            | set(strings["entity"]["sensor"])
-        )
-        assert key in known, key
-    for reason in re.findall(r'reason="([a-z_]+)"', source):
-        aborts = set(strings["config"]["abort"]) | set(
-            strings["issues"]["tariff_missing"]["fix_flow"]["abort"]
-        )
-        assert reason in aborts, reason
-    errors = set(strings["config"]["error"]) | set(strings["options"]["error"])
-    for error in re.findall(r'errors\["base"\] = "([a-z_]+)"', source):
-        assert error in errors, error
+    source = _source()
+    used = _translation_keys(source)
+    sensors = set(strings["entity"]["sensor"])
+    assert used - sensors == set(strings["exceptions"]) | set(strings["issues"])
+    assert sensors <= used
+
+
+def test_every_issue_has_strings() -> None:
+    issues = {
+        value
+        for name, value in vars(const).items()
+        if name.startswith("ISSUE_") and isinstance(value, str)
+    }
+    assert issues == set(_strings()["issues"])
+    # Retired issues are only deleted, so they need no strings.
+    assert const.RETIRED_ISSUE_REBUILD_SKIPPED not in _strings()["issues"]
+
+
+def test_every_abort_and_error_has_strings_and_is_used() -> None:
+    strings = _strings()
+    source = _source()
+    reasons = set(re.findall(r'reason="([a-z_]+)"', source))
+    # Home Assistant raises this one for _abort_if_unique_id_configured. The
+    # other implicit aborts (single_instance_allowed, already_in_progress,
+    # reauth_successful, reconfigure_successful) use its own strings.
+    assert "_abort_if_unique_id_configured()" in source
+    reasons.add("already_configured")
+    fix_flow = strings["issues"]["tariff_missing"]["fix_flow"]["abort"]
+    assert reasons == set(strings["config"]["abort"]) | set(fix_flow)
+    errors = set(re.findall(r'errors\["base"\] = "([a-z_]+)"', source))
+    assert errors == set(strings["config"]["error"]) | set(strings["options"]["error"])
 
 
 def test_every_flow_step_has_strings() -> None:

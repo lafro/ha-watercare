@@ -93,9 +93,8 @@ class TariffSchedule:
     def for_year(self, year: int) -> Tariff | None:
         """Return the tariff for a financial year, or None when unknown.
 
-        Years before the earliest published year use that year's prices: the
-        table starts in 2018/19, which covers every account seen so far.
-        Years after the latest published year have no price until the user
+        Years before the earliest published year, 2018/19, use that year's
+        prices. Years after the latest published year have no price until the user
         enters one or a release adds it.
         """
         if (override := self.overrides.get(year)) is not None:
@@ -159,18 +158,3 @@ def tariff_from_user_input(value: Mapping[str, Any]) -> Tariff:
     if tariff is None:
         raise ValueError("Invalid tariff input")
     return tariff
-
-
-def matching_published_year(
-    water_rate: float, wastewater_rate: float, fixed_charge: float
-) -> int | None:
-    """Return the published year whose prices equal the given figures."""
-    candidate = Tariff(
-        Decimal(str(water_rate)),
-        Decimal(str(wastewater_rate)),
-        Decimal(str(fixed_charge)),
-    )
-    for year, tariff in PUBLISHED_TARIFFS.items():
-        if tariff == candidate:
-            return year
-    return None

@@ -113,6 +113,8 @@ NEW_PASSWORD = "synthetic-journey-password-2"  # noqa: S105 - synthetic
 WRONG_PASSWORD = "not-the-synthetic-password"  # noqa: S105 - synthetic
 # What the options journey enters: a ratio and prices no year has.
 NEW_RATIO = Decimal("0.95")
+# What the setup form gets where a journey enters a ratio of its own.
+SETUP_RATIO = Decimal("0.9")
 # A sign-in from a form: the B2C steps, then the account it reaches.
 SIGN_IN = ["authorize", "self_asserted", "confirmed", "token", "account"]
 # Values are compared to the expected ones within this (litres or NZD).
@@ -129,6 +131,13 @@ TOKEN_LIFETIME_S = 600
 SHOWN_PROBLEMS = 5
 # The stand-in's folder, in the instance's configuration folder.
 STANDIN_FOLDER = "journeys"
+# Home Assistant's log, in the instance's configuration folder, and its lines:
+# "<date> <time>.<ms> <LEVEL> (<thread>) [<logger>] <message>".
+LOG_FILE = "home-assistant.log"
+LOG_LINE = re.compile(
+    r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{3} (?P<level>[A-Z]+) "
+    r"\(.*?\) \[(?P<name>[^\]]+)\] (?P<message>.*)$"
+)
 _FAKES = ("watercare_http.py",)
 
 
@@ -873,21 +882,29 @@ class Journey:
         if result.get("type") == "create_entry":
             self.entries.append(str(result["result"]["entry_id"]))
 
-    def set_up(self, email: str, password: str) -> tuple[dict[str, Any], datetime]:
-        """Sign in from Add integration; return the step after it and when."""
+    def set_up(
+        self, email: str, password: str, ratio: Decimal | None = None
+    ) -> tuple[dict[str, Any], datetime]:
+        """Sign in from Add integration; return the step after it and when.
+
+        With ``ratio``, the form's wastewater ratio is changed to it.
+        """
         first = self.start_flow({})
         self.require(
             "the setup starts at the sign-in form", first.get("step_id") == "user"
         )
+        data: dict[str, Any] = {"username": email, "password": password}
+        if ratio is not None:
+            data["wastewater_ratio"] = float(ratio)
         started = datetime.now(UTC)
-        after = self.submit(
-            str(first["flow_id"]), {"username": email, "password": password}
-        )
+        after = self.submit(str(first["flow_id"]), data)
         return after, started
 
-    def new_entry(self, email: str = EMAIL) -> tuple[str, Import]:
+    def new_entry(
+        self, email: str = EMAIL, ratio: Decimal | None = None
+    ) -> tuple[str, Import]:
         """Add the integration, wait for its first statistics update, return it."""
-        done, _started = self.set_up(email, self.current.password)
+        done, _started = self.set_up(email, self.current.password, ratio)
         self.require(
             "the entry is created",
             done.get("type") == "create_entry",
@@ -895,8 +912,63 @@ class Journey:
         )
         entry_id = self.entries[-1]
         issued = self.issued()
-        self.wait_imported(entry_id, rebuilt=True)
-        return entry_id, Import(issued)
+        self.wait_imported(entry_id, first=True)
+        return entry_id, Import(issued, Pricing(ratio or DEFAULT_RATIO))
+
+    def remove(self, entry_id: str) -> None:
+        """Remove the entry, as its Delete menu item does."""
+        self.client.rest("DELETE", f"/api/config/config_entries/entry/{entry_id}")
+        self.entries.remove(entry_id)
+        wait(
+            "the entry to be removed",
+            lambda: self.entry(entry_id) is None or None,
+            SYNC_TIMEOUT_S,
+        )
+
+    def log_mark(self) -> int:
+        """Return where the instance's log ends now, to read ``own_log`` from."""
+        try:
+            return self._log_file().stat().st_size
+        except FileNotFoundError:
+            return 0
+
+    def own_log(self, since: int) -> list[tuple[str, str]]:
+        """Return the integration's log lines after ``since``: level, message.
+
+        From the instance's log, where the integration logs at debug level;
+        Settings → System → Logs keeps only warnings and errors. A log shorter
+        than the mark was started afresh by a restart, so it is read whole.
+        """
+        try:
+            with self._log_file().open("rb") as log:
+                end = log.seek(0, 2)
+                log.seek(since if since <= end else 0)
+                text = log.read().decode(errors="replace")
+        except FileNotFoundError:
+            return []
+        own = f"custom_components.{DOMAIN}"
+        return [
+            (line["level"], line["message"])
+            for line in map(LOG_LINE.match, text.splitlines())
+            if line is not None
+            and (line["name"] == own or line["name"].startswith(f"{own}."))
+        ]
+
+    def check_quiet(self, when: str, since: int) -> None:
+        """Check that the integration logged nothing above debug since ``since``.
+
+        Its debug lines must be there, so a log that could not be read fails.
+        """
+        lines = self.own_log(since)
+        loud = [f"{level}: {message}" for level, message in lines if level != "DEBUG"]
+        self.check(
+            f"{when}, the integration logged nothing above debug level",
+            bool(lines) and not loud,
+            "; ".join(loud[:3]) if lines else f"no line from it in {LOG_FILE}",
+        )
+
+    def _log_file(self) -> Path:
+        return live_ha.config_dir(self.client.instance.state) / LOG_FILE
 
     # -------------------------------------------------------------- entries
 
@@ -921,12 +993,12 @@ class Journey:
         return data
 
     def wait_imported(
-        self, entry_id: str, days: int | None = None, *, rebuilt: bool = False
+        self, entry_id: str, days: int | None = None, *, first: bool = False
     ) -> dict[str, Any]:
         """Wait for the entry's statistics update; return the coordinator's state.
 
-        With ``rebuilt``, the first update of a new entry, which rebuilds the
-        statistics from every bill; otherwise an update that adds ``days``.
+        With ``first``, the first update of a new entry, whatever it added;
+        otherwise an update that adds ``days``.
         """
 
         def imported() -> dict[str, Any] | None:
@@ -937,13 +1009,9 @@ class Journey:
                 coordinator: dict[str, Any] = self.diagnostics(entry_id)["coordinator"]
             except JourneyError, KeyError:
                 return None
-            status = coordinator.get("statistics_status")
-            if status == "rebuild_skipped":
-                message = "the integration skipped its statistics rebuild"
-                raise JourneyError(message)
             last = coordinator.get("last_import") or {}
-            if rebuilt:
-                done = status == "rebuilt" and last.get("rebuilt")
+            if first:
+                done = coordinator.get("statistics_status") == "imported"
             else:
                 done = last.get("consumption_rows") == days
             return coordinator if done else None
@@ -1233,9 +1301,10 @@ def _sign_in_statuses(records: Iterable[dict[str, Any]]) -> list[str]:
 
 
 def first_setup(j: Journey) -> None:
-    """First setup: email and password, the entry, the history imported."""
+    """First setup: email, password and ratio, the entry, the history imported."""
     j.scenario(j.watercare())
-    done, started = j.set_up(EMAIL, PASSWORD)
+    mark = j.log_mark()
+    done, started = j.set_up(EMAIL, PASSWORD, SETUP_RATIO)
     j.require(
         "the entry is created",
         done.get("type") == "create_entry",
@@ -1249,7 +1318,7 @@ def first_setup(j: Journey) -> None:
     )
     entry_id = j.entries[-1]
     issued = j.issued()
-    coordinator = j.wait_imported(entry_id, rebuilt=True)
+    coordinator = j.wait_imported(entry_id, first=True)
     days = sum(bill.days for bill in issued)
     last = coordinator.get("last_import") or {}
     # The diagnostics' bill count is compared, not printed: CodeQL takes any
@@ -1281,7 +1350,56 @@ def first_setup(j: Journey) -> None:
         and "billing_periods" in first_update,
         ", ".join(first_update) or "no requests",
     )
-    j.check_entry(entry_id, [Import(issued)])
+    stored = j.diagnostics(entry_id)["config_entry"]
+    j.check(
+        "the entry keeps the ratio entered at setup",
+        stored.get("wastewater_ratio") == float(SETUP_RATIO),
+        f"ratio {stored.get('wastewater_ratio')}",
+    )
+    j.check_entry(entry_id, [Import(issued, Pricing(SETUP_RATIO))])
+    j.check_quiet("from the setup to the first import", mark)
+
+
+def add_again(j: Journey) -> None:
+    """Remove and add again: the history continues; deleted, it comes back whole."""
+    j.scenario(j.watercare(withheld=1))
+    entry_id, first = j.new_entry()
+    before = j.check_entry(entry_id, [first])
+    j.remove(entry_id)
+    j.check_unchanged("Watercare was removed", before, j.statistics())
+
+    # A bill issued while it was gone: adding it again adds only its days.
+    j.scenario(j.watercare(withheld=0))
+    mark = j.log_mark()
+    again_id, again = j.new_entry()
+    newest = again.bills[-1].days
+    last = j.diagnostics(again_id)["coordinator"].get("last_import") or {}
+    j.check(
+        "added again, the first update added only the new bill's days",
+        last.get("consumption_rows") == newest
+        and last.get("cost_rows") == len(COSTS) * newest,
+        f"{last.get('consumption_rows')} usage and {last.get('cost_rows')} cost "
+        f"rows (expected {newest} and {len(COSTS) * newest})",
+    )
+    after = j.check_entry(again_id, [first, again])
+    j.check_unchanged("Watercare was added again", before, after)
+    j.check_quiet("added again over the kept statistics", mark)
+
+    # The statistics deleted, as the README says for starting again: the
+    # next setup imports every bill, at the ratio it is given.
+    j.remove(again_id)
+    j.clear_statistics()
+    mark = j.log_mark()
+    fresh_id, fresh = j.new_entry(ratio=SETUP_RATIO)
+    days = sum(bill.days for bill in fresh.bills)
+    last = j.diagnostics(fresh_id)["coordinator"].get("last_import") or {}
+    j.check(
+        "with the statistics deleted, the first update imported every day",
+        last.get("consumption_rows") == days,
+        f"{last.get('consumption_rows')} usage rows (expected {days})",
+    )
+    j.check_entry(fresh_id, [fresh])
+    j.check_quiet("added again after deleting the statistics", mark)
 
 
 def wrong_password(j: Journey) -> None:
@@ -1317,7 +1435,7 @@ def wrong_password(j: Journey) -> None:
     )
     entry_id = j.entries[-1]
     issued = j.issued()
-    j.wait_imported(entry_id, rebuilt=True)
+    j.wait_imported(entry_id, first=True)
     j.check_entry(entry_id, [Import(issued)])
 
 
@@ -1357,7 +1475,7 @@ def watercare_down(j: Journey) -> None:
     )
     entry_id = j.entries[-1]
     issued = j.issued()
-    j.wait_imported(entry_id, rebuilt=True)
+    j.wait_imported(entry_id, first=True)
     j.check_entry(entry_id, [Import(issued)])
 
 
@@ -1581,8 +1699,7 @@ def restart(j: Journey, relaunch: Callable[[], None]) -> None:
         j.check(
             f"after {when}, the update added only the new bill's days",
             last.get("consumption_rows") == newest
-            and last.get("cost_rows") == len(COSTS) * newest
-            and not last.get("rebuilt"),
+            and last.get("cost_rows") == len(COSTS) * newest,
             f"{last.get('consumption_rows')} usage and {last.get('cost_rows')} "
             f"cost rows (expected {newest} and {len(COSTS) * newest})",
         )
@@ -1599,7 +1716,8 @@ def restart(j: Journey, relaunch: Callable[[], None]) -> None:
 
 
 JOURNEYS: dict[str, str] = {
-    "first_setup": "First setup: email and password, entry, history imported",
+    "first_setup": "First setup: email, password and ratio, history imported",
+    "add_again": "Remove and add again: history continues; deleted, comes back whole",
     "wrong_password": "Wrong password, then the right one",
     "watercare_down": "Watercare down for maintenance, then down, at setup; then back",
     "reauth": "Watercare no longer takes the stored login: sign in again",

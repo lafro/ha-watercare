@@ -5,11 +5,10 @@ How the Watercare integration works, why it works that way, and how it is releas
 | Page | Read it when you want |
 |---|---|
 | [architecture.md](architecture.md) | How the code is put together: modules, data flow, sign-in, errors, configuration. |
-| [statistics.md](statistics.md) | How bills become long-term statistics, the one-off rebuild, and start-up and the recorder. |
+| [statistics.md](statistics.md) | How bills become long-term statistics, starting again, and start-up and the recorder. |
 | [tariffs.md](tariffs.md) | The published prices by financial year, their sources, and how a bill is priced. |
 | [history-and-decisions.md](history-and-decisions.md) | Where the code came from, what changed and why, and the problems already solved. |
 | [known-unknowns.md](known-unknowns.md) | The assumptions the code relies on, what is not known, and what to re-check. |
-| [migration.md](migration.md) | Upgrading from 1.4.x to 1.5: backup, pre-flight, checks and rollback. |
 | [release.md](release.md) | Versions, the Release workflow, and the yearly price update. |
 
 Reading paths:

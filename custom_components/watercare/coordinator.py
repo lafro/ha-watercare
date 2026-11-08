@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass, replace
+from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from typing import TYPE_CHECKING
@@ -25,17 +26,13 @@ from .api import (
 )
 from .const import (
     CONF_WASTEWATER_RATIO,
-    DATA_STATISTICS_VERSION,
     DEFAULT_WASTEWATER_RATIO,
     DOMAIN,
-    ISSUE_REBUILD_SKIPPED,
     ISSUE_SMART_METER,
     ISSUE_TARIFF_MISSING,
     ISSUE_UPGRADE_REQUIRED,
     NZ_TIMEZONE,
     SMART_METER_DOCS_URL,
-    STATISTICS_DOCS_URL,
-    STATISTICS_VERSION,
     TARIFF_DOCS_URL,
     UPDATE_INTERVAL,
     UPGRADE_DOCS_URL,
@@ -44,6 +41,8 @@ from .models import (
     AccountSummary,
     BillingPeriod,
     IssuedBill,
+    RefusalReason,
+    RefusedPeriod,
     WatercarePayloadError,
     bill_period,
     parse_billing_periods,
@@ -53,9 +52,6 @@ from .statistics import (
     BillCost,
     ImportResult,
     async_import,
-    async_rebuild,
-    async_rebuild_would_lose_history,
-    async_wait_for_queue,
     bill_cost,
     pricing_date,
 )
@@ -74,6 +70,12 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
+_REFUSED: dict[RefusalReason, str] = {
+    "no_usage": "has no water use figure",
+    "overlaps_previous": "overlaps the period before it",
+    "overlaps_stored": "overlaps days already recorded",
+}
+
 
 @dataclass(frozen=True, slots=True)
 class WatercareData:
@@ -84,8 +86,10 @@ class WatercareData:
     latest_cost: BillCost | None
     latest_tariff: Tariff | None
     period_count: int
-    skipped_periods: int
+    unfinished_periods: int
+    unreadable_periods: int
     duplicate_periods: int
+    refused_periods: int
     last_bill: IssuedBill | None = None
     """The newest bill in the account's transactions, kept from an earlier poll
     when this one could not read them."""
@@ -116,7 +120,7 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
             hass,
             _LOGGER,
             config_entry=entry,
-            name=DOMAIN,
+            name="Watercare",
             update_interval=UPDATE_INTERVAL,
         )
         self.api = api
@@ -124,11 +128,8 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
         self.wastewater_ratio = Decimal(
             str(entry.options.get(CONF_WASTEWATER_RATIO, DEFAULT_WASTEWATER_RATIO))
         )
-        self.statistics_status = (
-            "current"
-            if entry.data.get(DATA_STATISTICS_VERSION) == STATISTICS_VERSION
-            else "rebuild_pending"
-        )
+        self.statistics_status = "pending"
+        """Whether a statistics update has finished since setup ("imported")."""
         self.last_import = ImportResult()
         """What the latest statistics update wrote."""
         self.missing_tariff_year: int | None = None
@@ -137,6 +138,9 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
         self._statistics_periods: tuple[BillingPeriod, ...] | None = None
         self._statistics_task: asyncio.Task[None] | None = None
         self._last_bill: IssuedBill | None = None
+        self._last_bill_failing = False
+        self._warned_unreadable = 0
+        self._warned_refused: set[tuple[date, date, RefusalReason]] = set()
 
     async def _async_update_data(self) -> WatercareData:
         """Fetch bills and the account; the statistics follow in the background."""
@@ -169,23 +173,48 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
 
         try:
             parsed = parse_billing_periods(
-                payload, today=dt_util.now(NZ_TIMEZONE).date()
+                payload,
+                today=dt_util.now(NZ_TIMEZONE).date(),
+                smart_meter=account.smart_meter,
             )
         except WatercarePayloadError as err:
             raise UpdateFailed(
                 translation_domain=DOMAIN, translation_key="unexpected_response"
             ) from err
-        if not parsed.periods:
-            raise UpdateFailed(
-                translation_domain=DOMAIN, translation_key="no_billing_periods"
-            )
-        if parsed.skipped or parsed.duplicates:
-            # Debug only: an unfinished period would be skipped on every poll.
+        if parsed.unfinished or parsed.duplicates:
+            # Debug only: an unfinished period is left out on every poll.
             _LOGGER.debug(
-                "Ignored %d unusable and %d duplicate billing periods",
-                parsed.skipped,
+                "Left out %d billing periods that end today or later and %d duplicates",
+                parsed.unfinished,
                 parsed.duplicates,
             )
+        if not parsed.periods:
+            # The error says why. The per-period warnings stay out: a setup
+            # retry starts a new coordinator, so they would repeat each retry.
+            _LOGGER.debug(
+                "No usable billing period: %d unreadable, %d refused",
+                parsed.unreadable,
+                len(parsed.refused),
+            )
+            raise UpdateFailed(
+                translation_domain=DOMAIN,
+                translation_key=(
+                    "smart_meter"
+                    if account.smart_meter
+                    # Bills were sent but none could be read: not a missing bill.
+                    else "unexpected_response"
+                    if parsed.unreadable
+                    else "no_billing_periods"
+                ),
+            )
+        if parsed.unreadable > self._warned_unreadable:
+            self._warned_unreadable = parsed.unreadable
+            _LOGGER.warning(
+                "Could not read %d of the billing periods Watercare sent; their "
+                "days have no water use in the statistics",
+                parsed.unreadable,
+            )
+        self._log_refused(parsed.refused)
 
         periods = parsed.periods
         latest = periods[-1]
@@ -200,8 +229,10 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
             latest_cost=bill_cost(latest, self.schedule, self.wastewater_ratio),
             latest_tariff=self.schedule.for_day(pricing_date(latest)),
             period_count=len(periods),
-            skipped_periods=parsed.skipped,
+            unfinished_periods=parsed.unfinished,
+            unreadable_periods=parsed.unreadable,
             duplicate_periods=parsed.duplicates,
+            refused_periods=len(parsed.refused),
             last_bill=last_bill,
             last_bill_period=bill_period(last_bill, periods) if last_bill else None,
             last_bill_fetch_failed=fetch_failed,
@@ -211,7 +242,8 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
         """Read the newest bill's amount; return whether the transactions loaded.
 
         The amount adds to the bills the poll already has, so a failure here
-        keeps the bill read before and never fails the poll.
+        keeps the bill read before and never fails the poll. An unexpected
+        error is logged once until a read succeeds again.
         """
         try:
             bills = parse_bills(await self.api.async_get_transactions())
@@ -221,14 +253,37 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
             )
             return False
         except Exception as err:  # noqa: BLE001 - the amount never fails the poll
+            if not self._last_bill_failing:
+                _LOGGER.warning(
+                    "Could not read the newest Watercare bill's amount because of an "
+                    "unexpected error; Last bill amount keeps the amount read "
+                    "earlier, if any"
+                )
             # Only the error's type: its message could quote the response.
-            _LOGGER.warning(
-                "Unexpected error reading the Watercare bills' amounts: %s",
+            _LOGGER.debug(
+                "Reading the Watercare bills' amounts failed: unexpected %s",
                 type(err).__name__,
             )
+            self._last_bill_failing = True
             return False
+        self._last_bill_failing = False
         self._last_bill = bills[-1] if bills else None
         return True
+
+    def _log_refused(self, refused: Iterable[RefusedPeriod]) -> None:
+        """Warn once per setup about each bill the smart-meter guard refused."""
+        for item in refused:
+            key = (item.period.start, item.period.end, item.reason)
+            if key in self._warned_refused:
+                continue
+            self._warned_refused.add(key)
+            _LOGGER.warning(
+                "Skipped the Watercare billing period from %s to %s, which %s, "
+                "because Watercare reports a smart meter",
+                item.period.start.isoformat(),
+                item.period.end.isoformat(),
+                _REFUSED[item.reason],
+            )
 
     @callback
     def async_start_statistics(self) -> None:
@@ -269,24 +324,24 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
 
         Unloading the entry or stopping Home Assistant cancels this task. A
         cancellation can only take effect while it waits for the recorder or
-        reads from it, never between the rebuild's clear and import. One that
-        lands after the rebuild is queued and before it is recorded as done
-        leaves the queued rebuild to the recorder, and the next update
-        rebuilds again, to the same rows.
+        reads from it, before any row is queued: the rows are queued together,
+        with nothing awaited in between.
         """
         while (periods := self._statistics_periods) is not None:
             self._statistics_periods = None
             try:
                 result = await self._async_update_statistics(periods)
             except Exception:
-                # A background task has no caller to report to. Nothing that
-                # failed is recorded as done, so the next poll tries again.
+                # A background task has no caller to report to. The next
+                # update reads the stored history again and carries on from it.
                 _LOGGER.exception(
-                    "Could not update the Watercare statistics; the next poll "
-                    "tries again"
+                    "Could not update the Watercare statistics; the next update, "
+                    "within 12 hours, tries again"
                 )
                 continue
             self.last_import = result
+            self.statistics_status = "imported"
+            self._log_refused(result.refused)
             self.missing_tariff_year = self._async_check_tariff(
                 result.missing_tariff_year
             )
@@ -294,76 +349,15 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
     async def _async_update_statistics(
         self, periods: tuple[BillingPeriod, ...]
     ) -> ImportResult:
-        """Import new days, or rebuild once for entries from before 1.5.0."""
-        entry = self.config_entry
-        if entry.data.get(DATA_STATISTICS_VERSION) == STATISTICS_VERSION:
-            return await async_import(
-                self.hass, periods, self.schedule, self.wastewater_ratio
-            )
-
-        if await async_rebuild_would_lose_history(self.hass, periods):
-            # The stored history holds bills Watercare no longer returns, so a
-            # rebuild would lose them. Keep the stored rows and carry on.
-            _LOGGER.warning(
-                "Not rebuilding the Watercare statistics: the stored history "
-                "includes bills Watercare no longer returns. New days are added "
-                "after the stored history instead"
-            )
-            ir.async_create_issue(
-                self.hass,
-                DOMAIN,
-                f"{ISSUE_REBUILD_SKIPPED}_{entry.entry_id}",
-                is_fixable=False,
-                is_persistent=True,
-                severity=ir.IssueSeverity.WARNING,
-                translation_key=ISSUE_REBUILD_SKIPPED,
-                learn_more_url=STATISTICS_DOCS_URL,
-            )
-            self.statistics_status = "rebuild_skipped"
-            result = await async_import(
-                self.hass, periods, self.schedule, self.wastewater_ratio
-            )
-        else:
-            # Queues the clear and the import together, without awaiting.
-            result, cleared = async_rebuild(
-                self.hass, periods, self.schedule, self.wastewater_ratio
-            )
-            # Queued is not written. At shutdown the recorder works through its
-            # queue at the final-write stage. If that stage times out,
-            # Recorder._async_close drops what is left, and that can even
-            # separate the clear from the import. Record the rebuild as done
-            # only once the recorder has taken all of it. Until then the
-            # marker is unset, so whatever a shutdown drops, the next start
-            # rebuilds. Recorded earlier, it could say the statistics were
-            # rebuilt while they still hold the 1.4.x rows, or nothing. Taken
-            # is not always written: an import the recorder retries or drops
-            # after this leaves its statistic empty for now, and the next
-            # update imports an empty statistic in full (docs/statistics.md).
-            await async_wait_for_queue(self.hass)
-            if not cleared.is_set():
-                # The recorder runs the clear only once. On a database error
-                # (a locked SQLite database, a MariaDB lock-wait timeout) it
-                # logs the error and moves on, and the imports behind the
-                # clear still run, on top of the 1.4.x rows. The recorder
-                # takes one task at a time and the imports are queued behind
-                # the clear, so the flag is final by now, except in one
-                # start-up race that can only leave it unset early (a
-                # spurious warning; the next poll rebuilds to the same rows).
-                # Leave the marker unset: the imported rows reach the same
-                # total as a rebuild, so the check above lets the next
-                # update rebuild.
-                _LOGGER.warning(
-                    "The recorder did not clear the Watercare statistics (its "
-                    "log has the error), so the rebuild is not recorded as "
-                    "done; the next poll rebuilds them"
-                )
-                return replace(result, rebuilt=False)
-            self.statistics_status = "rebuilt"
-
-        self.hass.config_entries.async_update_entry(
-            entry, data={**entry.data, DATA_STATISTICS_VERSION: STATISTICS_VERSION}
+        """Add the days after the stored history, or every day if none is."""
+        account = self.api.account
+        return await async_import(
+            self.hass,
+            periods,
+            self.schedule,
+            self.wastewater_ratio,
+            smart_meter=account is not None and account.smart_meter,
         )
-        return result
 
     @callback
     def _async_check_meter(self, account: AccountSummary) -> None:
@@ -371,7 +365,8 @@ class WatercareCoordinator(DataUpdateCoordinator[WatercareData]):
 
         Only manually read meters have the billing periods this integration
         reads, and no smart-meter answer has been seen to build support on.
-        The bills from before a change to a smart meter still load.
+        Whatever periods Watercare still lists load, behind the guard in
+        ``parse_billing_periods`` and ``async_import``.
         """
         issue_id = f"{ISSUE_SMART_METER}_{self.config_entry.entry_id}"
         if not account.smart_meter:
